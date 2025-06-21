@@ -16,10 +16,22 @@ export type UndiciResponseData<T = unknown> = Dispatcher.ResponseData<T>;
 
 import { inspect } from 'node:util';
 import path from 'node:path';
+import fs from 'node:fs';
+import { CACHE_DIR } from '../constants/dir';
 
-const agent = new Agent({});
+if (!fs.existsSync(CACHE_DIR)) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+const agent = new Agent({ allowH2: false });
 
 setGlobalDispatcher(agent.compose(
+  interceptors.dns({
+    // disable IPv6
+    dualStack: false,
+    affinity: 4
+    // TODO: proper cacheable-lookup, or even DoH
+  }),
   interceptors.retry({
     maxRetries: 5,
     minTimeout: 500, // The initial retry delay in milliseconds
@@ -28,11 +40,11 @@ setGlobalDispatcher(agent.compose(
     // TODO: this part of code is only for allow more errors to be retried by default
     // This should be removed once https://github.com/nodejs/undici/issues/3728 is implemented
     retry(err, { state, opts }, cb) {
-      const statusCode = 'statusCode' in err && typeof err.statusCode === 'number' ? err.statusCode : null;
       const errorCode = 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
-      const headers = ('headers' in err && typeof err.headers === 'object') ? err.headers : undefined;
 
-      const { counter } = state;
+      Object.defineProperty(err, '_url', {
+        value: opts.method + ' ' + opts.origin?.toString() + opts.path
+      });
 
       // Any code that is not a Undici's originated and allowed to retry
       if (
@@ -43,29 +55,7 @@ setGlobalDispatcher(agent.compose(
         return cb(err);
       }
 
-      // if (errorCode === 'UND_ERR_REQ_RETRY') {
-      //   return cb(err);
-      // }
-
-      const { method, retryOptions = {} } = opts;
-
-      const {
-        maxRetries = 5,
-        minTimeout = 500,
-        maxTimeout = 10 * 1000,
-        timeoutFactor = 2,
-        methods = ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE', 'TRACE']
-      } = retryOptions;
-
-      // If we reached the max number of retries
-      if (counter > maxRetries) {
-        return cb(err);
-      }
-
-      // If a set of method are provided and the current method is not in the list
-      if (Array.isArray(methods) && !methods.includes(method)) {
-        return cb(err);
-      }
+      const statusCode = 'statusCode' in err && typeof err.statusCode === 'number' ? err.statusCode : null;
 
       // bail out if the status code matches one of the following
       if (
@@ -80,6 +70,30 @@ setGlobalDispatcher(agent.compose(
         return cb(err);
       }
 
+      // if (errorCode === 'UND_ERR_REQ_RETRY') {
+      //   return cb(err);
+      // }
+
+      const {
+        maxRetries = 5,
+        minTimeout = 500,
+        maxTimeout = 10 * 1000,
+        timeoutFactor = 2,
+        methods = ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE', 'TRACE']
+      } = opts.retryOptions || {};
+
+      // If we reached the max number of retries
+      if (state.counter > maxRetries) {
+        return cb(err);
+      }
+
+      // If a set of method are provided and the current method is not in the list
+      if (Array.isArray(methods) && !methods.includes(opts.method)) {
+        return cb(err);
+      }
+
+      const headers = ('headers' in err && typeof err.headers === 'object') ? err.headers : undefined;
+
       const retryAfterHeader = (headers as Record<string, string> | null | undefined)?.['retry-after'];
       let retryAfter = -1;
       if (retryAfterHeader) {
@@ -89,10 +103,9 @@ setGlobalDispatcher(agent.compose(
           : retryAfter * 1e3; // Retry-After is in seconds
       }
 
-      const retryTimeout
-        = retryAfter > 0
-          ? Math.min(retryAfter, maxTimeout)
-          : Math.min(minTimeout * (timeoutFactor ** (counter - 1)), maxTimeout);
+      const retryTimeout = retryAfter > 0
+        ? Math.min(retryAfter, maxTimeout)
+        : Math.min(minTimeout * (timeoutFactor ** (state.counter - 1)), maxTimeout);
 
       console.log('[fetch retry]', 'schedule retry', { statusCode, retryTimeout, errorCode, url: opts.origin });
       // eslint-disable-next-line sukka/prefer-timer-id -- won't leak
@@ -105,8 +118,11 @@ setGlobalDispatcher(agent.compose(
   }),
   interceptors.cache({
     store: new BetterSqlite3CacheStore({
-      location: path.resolve(__dirname, '../../.cache/undici-better-sqlite3-cache-store.db')
-    })
+      loose: true,
+      location: path.join(CACHE_DIR, 'undici-better-sqlite3-cache-store.db'),
+      maxEntrySize: 1024 * 1024 * 100 // 100 MiB
+    }),
+    cacheByDefault: 180 // 3 minutes
   })
 ));
 
@@ -137,18 +153,18 @@ export class ResponseError<T extends UndiciResponseData | Response> extends Erro
 
 export const defaultRequestInit = {
   headers: {
-    'User-Agent': 'curl/8.9.1 (https://github.com/SukkaW/Surge)'
+    'User-Agent': 'curl/8.12.1 (https://github.com/SukkaW/Surge)'
   }
 };
 
-export async function $$fetch(url: string, init?: RequestInit) {
+export async function $$fetch(url: string, init: RequestInit = defaultRequestInit) {
   try {
     const res = await undici.fetch(url, init);
     if (res.status >= 400) {
       throw new ResponseError(res, url);
     }
 
-    if (!(res.status >= 200 && res.status <= 299) && res.status !== 304) {
+    if ((res.status < 200 || res.status > 299) && res.status !== 304) {
       throw new ResponseError(res, url);
     }
 
@@ -177,7 +193,7 @@ export async function requestWithLog(url: string, opt?: Parameters<typeof undici
       throw new ResponseError(res, url);
     }
 
-    if (!(res.statusCode >= 200 && res.statusCode <= 299) && res.statusCode !== 304) {
+    if ((res.statusCode < 200 || res.statusCode > 299) && res.statusCode !== 304) {
       throw new ResponseError(res, url);
     }
 

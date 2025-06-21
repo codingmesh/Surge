@@ -1,74 +1,54 @@
 import picocolors from 'picocolors';
-import { defaultRequestInit, requestWithLog, ResponseError } from './fetch-retry';
-import { wait } from 'foxts/wait';
+import { $$fetch, defaultRequestInit, ResponseError } from './fetch-retry';
+import { waitWithAbort } from 'foxts/wait';
+import { nullthrow } from 'foxts/guard';
+import { TextLineStream } from 'foxts/text-line-stream';
+import { ProcessLineStream } from './process-line';
 
 // eslint-disable-next-line sukka/unicorn/custom-error-definition -- typescript is better
-export class CustomAbortError extends Error {
+class CustomAbortError extends Error {
   public readonly name = 'AbortError';
   public readonly digest = 'AbortError';
 }
 
-export class Custom304NotModifiedError extends Error {
-  public readonly name = 'Custom304NotModifiedError';
-  public readonly digest = 'Custom304NotModifiedError';
+const reusedCustomAbortError = new CustomAbortError();
 
-  constructor(public readonly url: string, public readonly data: string) {
-    super('304 Not Modified');
-  }
-}
-
-export class CustomNoETagFallbackError extends Error {
-  public readonly name = 'CustomNoETagFallbackError';
-  public readonly digest = 'CustomNoETagFallbackError';
-
-  constructor(public readonly data: string) {
-    super('No ETag Fallback');
-  }
-}
-
-export function sleepWithAbort(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason as Error);
-      return;
-    }
-
-    signal.addEventListener('abort', stop, { once: true });
-
-    wait(ms).then(resolve).catch(reject).finally(() => signal.removeEventListener('abort', stop));
-
-    function stop(this: AbortSignal) { reject(this.reason as Error); }
-  });
-}
-
-export async function fetchAssetsWithout304(url: string, fallbackUrls: string[] | readonly string[]) {
+export async function fetchAssets(url: string, fallbackUrls: null | undefined | string[] | readonly string[], processLine = false, allowEmpty = false) {
   const controller = new AbortController();
 
   const createFetchFallbackPromise = async (url: string, index: number) => {
-    if (index > 0) {
-    // Most assets can be downloaded within 250ms. To avoid wasting bandwidth, we will wait for 500ms before downloading from the fallback URL.
+    if (index >= 0) {
+      // Most assets can be downloaded within 250ms. To avoid wasting bandwidth, we will wait for 500ms before downloading from the fallback URL.
       try {
-        await sleepWithAbort(500 + (index + 1) * 10, controller.signal);
+        await waitWithAbort(50 + (index + 1) * 150, controller.signal);
       } catch {
         console.log(picocolors.gray('[fetch cancelled early]'), picocolors.gray(url));
-        throw new CustomAbortError();
+        throw reusedCustomAbortError;
       }
     }
     if (controller.signal.aborted) {
       console.log(picocolors.gray('[fetch cancelled]'), picocolors.gray(url));
-      throw new CustomAbortError();
+      throw reusedCustomAbortError;
     }
-    const res = await requestWithLog(url, { signal: controller.signal, ...defaultRequestInit });
-    const text = await res.body.text();
+    const res = await $$fetch(url, { signal: controller.signal, ...defaultRequestInit });
 
-    if (text.length < 2) {
+    let stream = nullthrow(res.body, url + ' has an empty body').pipeThrough(new TextDecoderStream()).pipeThrough(new TextLineStream({ skipEmptyLines: processLine }));
+    if (processLine) {
+      stream = stream.pipeThrough(new ProcessLineStream());
+    }
+    const arr = await Array.fromAsync(stream);
+
+    if (arr.length < 1 && !allowEmpty) {
       throw new ResponseError(res, url, 'empty response w/o 304');
     }
 
     controller.abort();
-    return text;
+    return arr;
   };
 
+  if (!fallbackUrls || fallbackUrls.length === 0) {
+    return createFetchFallbackPromise(url, -1);
+  }
   return Promise.any([
     createFetchFallbackPromise(url, -1),
     ...fallbackUrls.map(createFetchFallbackPromise)

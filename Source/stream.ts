@@ -67,7 +67,8 @@ const AMAZON_PRIME_VIDEO: StreamService = {
 const ABEMA_TV: StreamService = {
   name: 'AbemaTV',
   rules: [
-    'DOMAIN-KEYWORD,abematv.akamaized.net',
+    // Pure Front-End detection https://ds-linear-abematv.akamaized.net/region check HTTP 200
+    'DOMAIN,ds-linear-abematv.akamaized.net',
     'DOMAIN-SUFFIX,abema.io',
     'DOMAIN-SUFFIX,abema.tv',
     'DOMAIN-SUFFIX,ameba.jp',
@@ -151,6 +152,14 @@ const BILIBILI_INTL: StreamService = {
     // upos-sz-mirroralibstar1.bilivideo.com, from domain bilivideo.com and without geoblocking
     'DOMAIN-SUFFIX,bilibili.tv',
     'PROCESS-NAME,com.bstar.intl'
+  ]
+};
+
+export const CRACKLE = {
+  name: 'Crackle',
+  rules: [
+    // 'DOMAIN,www.crackle.com', Hosted on S3, solely based on API to detect region
+    'DOMAIN,prod-api.crackle.com'
   ]
 };
 
@@ -281,7 +290,6 @@ const HBO: StreamService = {
     'DOMAIN-SUFFIX,hbomax.com',
     'DOMAIN-SUFFIX,hbomaxcdn.com',
 
-    // 'USER-AGENT,Max',
     // 'PROCESS-NAME,com.wbd.stream',
     'DOMAIN-SUFFIX,max.com',
     'DOMAIN-SUFFIX,discomax.com'
@@ -294,7 +302,10 @@ const HBO_ASIA: StreamService = {
     'DOMAIN-SUFFIX,hboasia.com',
     'DOMAIN-SUFFIX,hbogoasia.com',
     'DOMAIN-SUFFIX,hbogoasia.hk',
-    'DOMAIN-KEYWORD,.hbogoasia.',
+    'DOMAIN-SUFFIX,hbogoasia.id',
+    'DOMAIN-SUFFIX,hbogoasia.sg',
+    'DOMAIN-SUFFIX,hbogoasia.tw',
+    'DOMAIN-SUFFIX,hbogoasia.ph',
 
     'DOMAIN,44wilhpljf.execute-api.ap-southeast-1.amazonaws.com',
     // 'DOMAIN,bcbolthboa-a.akamaihd.net',
@@ -531,6 +542,14 @@ const NETFLIX: StreamService = {
   ]
 };
 
+const NHK_PLUS: StreamService = {
+  name: 'NHK Plus',
+  rules: [
+    // Pure Front-End detection just like AbemaTV: https://location-plus.nhk.jp/geoip/area.json
+    'DOMAIN-SUFFIX,location-plus.nhk.jp'
+  ]
+};
+
 const NOW_E: StreamService = {
   name: 'Now E',
   rules: [
@@ -598,7 +617,7 @@ const PORNHUB: StreamService = {
 const SOUNDCLOUD: StreamService = {
   name: 'SoundCloud',
   rules: [
-    'DOMAIN-SUFFIX,sndcdn.com',
+    // 'DOMAIN-SUFFIX,sndcdn.com',
     'DOMAIN-SUFFIX,soundcloud.com',
 
     'USER-AGENT,SoundCloud*'
@@ -776,6 +795,7 @@ export const ALL: StreamService[] = [
   $4GTV,
   ABEMA_TV, AMAZON_PRIME_VIDEO, ALL4, APPLE_TV, APPLE_MUSIC_TV,
   BAHAMUT, BBC, BILIBILI_INTL,
+  CRACKLE,
   DAZN, DEEZER, DISNEY_PLUS, DISCOVERY_PLUS, DMM,
   ENCORE_TVB,
   ENCORE_TVB_JP_TVER,
@@ -787,7 +807,7 @@ export const ALL: StreamService[] = [
   KKTV,
   LINE_TV, LITV,
   MY5, MYTV_SUPER,
-  NETFLIX, NAVER_TV, NICONICO, NOW_E,
+  NETFLIX, NAVER_TV, NICONICO, NHK_PLUS, NOW_E,
   OVERCAST_FM,
   PARAMOUNT, PBS, PEACOCK, PANDORA, PORNHUB,
   SOUNDCLOUD, SHOWTIME, SPOTIFY,
@@ -826,7 +846,8 @@ export const NORTH_AMERICA: StreamService[] = [
   // Funimation
   DISCOVERY_PLUS,
   PARAMOUNT,
-  PEACOCK
+  PEACOCK,
+  CRACKLE
   // Popcornflix
   // Crunchyroll
   // ATTNOW
@@ -897,7 +918,8 @@ export const JP: StreamService[] = [
   // Paravi
   // unext
   HULU_JP,
-  ENCORE_TVB_JP_TVER
+  ENCORE_TVB_JP_TVER,
+  NHK_PLUS
   // GYAO!
   // wowow
   // VideoMarket

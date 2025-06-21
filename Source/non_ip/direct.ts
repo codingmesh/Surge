@@ -4,6 +4,8 @@ export interface DNSMapping {
   },
   /** which also disallows wildcard */
   realip: boolean,
+  /** should convert to ruleset */
+  ruleset: boolean,
   dns: string,
   /**
    * domain[0]
@@ -20,6 +22,7 @@ export const DIRECTS = {
     dns: 'system',
     hosts: {},
     realip: false,
+    ruleset: false,
     domains: [
       'securelogin.com.cn',
       '$captive.apple.com',
@@ -30,6 +33,7 @@ export const DIRECTS = {
     dns: 'system',
     hosts: {},
     realip: true,
+    ruleset: false,
     domains: [
       '+m2m',
       // '+ts.net', // TailScale Magic DNS
@@ -37,9 +41,7 @@ export const DIRECTS = {
       '$injections.adguard.org',
       '$local.adguard.org',
       // Auto Discovery
-      '+_tcp',
-      '+bogon',
-      '+_msdcs'
+      '+bogon'
     ]
   }
 } as const satisfies Record<string, DNSMapping>;
@@ -49,6 +51,7 @@ export const LAN = {
     dns: 'system',
     hosts: {},
     realip: false,
+    ruleset: true,
     domains: [
       '+home',
       // 'zte.home', // ZTE CPE
@@ -102,18 +105,12 @@ export const LAN = {
       // 'web.setup'
     ]
   },
-  LAN: {
+  LAN_WITHOUT_REAL_IP: {
     dns: 'system',
-    hosts: {
-      localhost: ['127.0.0.1']
-    },
-    realip: true,
+    hosts: {},
+    realip: false,
+    ruleset: true,
     domains: [
-      '+lan',
-      // 'amplifi.lan',
-      // '$localhost',
-      '+localdomain',
-      'home.arpa',
       // AS112
       '10.in-addr.arpa',
       '16.172.in-addr.arpa',
@@ -136,5 +133,35 @@ export const LAN = {
       '168.192.in-addr.arpa',
       '254.169.in-addr.arpa'
     ]
+  },
+  LAN_WITH_REALIP: {
+    dns: 'system',
+    hosts: {
+      // localhost: ['127.0.0.1']
+    },
+    realip: true,
+    ruleset: true,
+    domains: [
+      '+lan',
+      '+local',
+      '+internal',
+      // 'amplifi.lan',
+      // '$localhost',
+      '+localdomain',
+      'home.arpa'
+    ]
+  }
+} as const satisfies Record<string, DNSMapping>;
+
+export const HOSTS = {
+  HOSTS: {
+    // not actually used, only for a placeholder
+    dns: 'quic://dns.alidns.com:853',
+    hosts: {
+      'cdn.jsdelivr.net': ['cdn.jsdelivr.net.cdn.cloudflare.net']
+    },
+    realip: false,
+    ruleset: false,
+    domains: []
   }
 } as const satisfies Record<string, DNSMapping>;

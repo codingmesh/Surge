@@ -7,20 +7,27 @@ import type { Headers as TarEntryHeaders } from 'tar-fs';
 import zlib from 'node:zlib';
 import undici from 'undici';
 import picocolors from 'picocolors';
+import { PUBLIC_DIR } from './constants/dir';
+import { requestWithLog } from './lib/fetch-retry';
+import { isDirectoryEmptySync } from './lib/misc';
+import { isCI } from 'ci-info';
 
 const GITHUB_CODELOAD_URL = 'https://codeload.github.com/sukkalab/ruleset.skk.moe/tar.gz/master';
 const GITLAB_CODELOAD_URL = 'https://gitlab.com/SukkaW/ruleset.skk.moe/-/archive/master/ruleset.skk.moe-master.tar.gz';
 
 export const downloadPreviousBuild = task(require.main === module, __filename)(async (span) => {
-  const publicDir = path.resolve(__dirname, '..', 'public');
-
-  if (fs.existsSync(publicDir)) {
+  if (fs.existsSync(PUBLIC_DIR) && !isDirectoryEmptySync(PUBLIC_DIR)) {
     console.log(picocolors.blue('Public directory exists, skip downloading previous build'));
     return;
   }
 
+  // we uses actions/checkout to download the previous build now, so we should throw if the directory is empty
+  if (isCI) {
+    throw new Error('CI environment detected, but public directory is empty');
+  }
+
   const tarGzUrl = await span.traceChildAsync('get tar.gz url', async () => {
-    const resp = await undici.request(GITHUB_CODELOAD_URL, { method: 'HEAD' });
+    const resp = await requestWithLog(GITHUB_CODELOAD_URL, { method: 'HEAD' });
     if (resp.statusCode !== 200) {
       console.warn('Download previous build from GitHub failed! Status:', resp.statusCode);
       console.warn('Switch to GitLab');
@@ -35,7 +42,7 @@ export const downloadPreviousBuild = task(require.main === module, __filename)(a
       {
         method: 'GET',
         headers: {
-          'User-Agent': 'curl/8.9.1',
+          'User-Agent': 'curl/8.12.1',
           // https://github.com/unjs/giget/issues/97
           // https://gitlab.com/gitlab-org/gitlab/-/commit/50c11f278d18fe1f3fb12eb595067216bb58ade2
           'sec-fetch-mode': 'same-origin'
@@ -59,33 +66,30 @@ export const downloadPreviousBuild = task(require.main === module, __filename)(a
 
     const pathPrefix = 'ruleset.skk.moe-master/';
 
-    const gunzip = zlib.createGunzip();
-    const extract = tarExtract(
-      publicDir,
-      {
-        ignore(_: string, header?: TarEntryHeaders) {
-          if (header) {
-            if (header.type !== 'file' && header.type !== 'directory') {
-              return true;
-            }
-            if (header.type === 'file' && path.extname(header.name) === '.ts') {
-              return true;
-            }
-          }
-
-          return false;
-        },
-        map(header) {
-          header.name = header.name.replace(pathPrefix, '');
-          return header;
-        }
-      }
-    );
-
     return pipeline(
       respBody,
-      gunzip,
-      extract
+      zlib.createGunzip(),
+      tarExtract(
+        PUBLIC_DIR,
+        {
+          ignore(_: string, header?: TarEntryHeaders) {
+            if (header) {
+              if (header.type !== 'file' && header.type !== 'directory') {
+                return true;
+              }
+              if (header.type === 'file' && path.extname(header.name) === '.ts') {
+                return true;
+              }
+            }
+
+            return false;
+          },
+          map(header) {
+            header.name = header.name.replace(pathPrefix, '');
+            return header;
+          }
+        }
+      )
     );
   });
 });

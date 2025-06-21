@@ -7,52 +7,42 @@ import type { Span } from './trace';
 import { task } from './trace';
 import { SHARED_DESCRIPTION } from './constants/description';
 import { fdir as Fdir } from 'fdir';
-import { appendArrayInPlace } from './lib/append-array-in-place';
+import { appendArrayInPlace } from 'foxts/append-array-in-place';
 import { SOURCE_DIR } from './constants/dir';
-import { DomainsetOutput, RulesetOutput } from './lib/create-file';
+import { DomainsetOutput } from './lib/rules/domainset';
+import { RulesetOutput } from './lib/rules/ruleset';
 
 const MAGIC_COMMAND_SKIP = '# $ custom_build_script';
 const MAGIC_COMMAND_TITLE = '# $ meta_title ';
 const MAGIC_COMMAND_DESCRIPTION = '# $ meta_description ';
 const MAGIC_COMMAND_SGMODULE_MITM_HOSTNAMES = '# $ sgmodule_mitm_hostnames ';
 
-const domainsetSrcFolder = 'domainset' + path.sep;
+const clawSourceDirPromise = new Fdir()
+  .withRelativePaths()
+  .filter((filepath, isDirectory) => {
+    if (isDirectory) return true;
+
+    const extname = path.extname(filepath);
+
+    return extname !== '.js' && extname !== '.ts';
+  })
+  .crawl(SOURCE_DIR)
+  .withPromise();
 
 export const buildCommon = task(require.main === module, __filename)(async (span) => {
   const promises: Array<Promise<unknown>> = [];
 
-  const paths = await new Fdir()
-    .withRelativePaths()
-    // .exclude((dirName, dirPath) => {
-    //   if (dirName === 'domainset' || dirName === 'ip' || dirName === 'non_ip') {
-    //     return false;
-    //   }
-    //   console.error(picocolors.red(`[build-comman] Unknown dir: ${dirPath}`));
-    //   return true;
-    // })
-    .filter((filepath, isDirectory) => {
-      if (isDirectory) return true;
-
-      const extname = path.extname(filepath);
-
-      return !(extname === '.js' || extname === '.ts');
-    })
-    .crawl(SOURCE_DIR)
-    .withPromise();
+  const paths = await clawSourceDirPromise;
 
   for (let i = 0, len = paths.length; i < len; i++) {
     const relativePath = paths[i];
     const fullPath = SOURCE_DIR + path.sep + relativePath;
 
-    if (relativePath.startsWith(domainsetSrcFolder)) {
-      promises.push(transformDomainset(span, fullPath));
-      continue;
-    }
     // if (
     //   relativePath.startsWith('ip/')
     //   || relativePath.startsWith('non_ip/')
     // ) {
-    promises.push(transformRuleset(span, fullPath, relativePath));
+    promises.push(transform(span, fullPath, relativePath));
     // continue;
     // }
 
@@ -107,72 +97,45 @@ function processFile(span: Span, sourcePath: string) {
   });
 }
 
-function transformDomainset(parentSpan: Span, sourcePath: string) {
+async function transform(parentSpan: Span, sourcePath: string, relativePath: string) {
   const extname = path.extname(sourcePath);
-  const basename = path.basename(sourcePath, extname);
-  return parentSpan
-    .traceChildAsync(
-      `transform domainset: ${basename}`,
-      async (span) => {
-        const res = await processFile(span, sourcePath);
-        if (res === $skip) return;
-
-        const id = basename;
-        const [title, descriptions, lines] = res;
-
-        let description: string[];
-        if (descriptions.length) {
-          description = SHARED_DESCRIPTION.slice();
-          description.push('');
-          appendArrayInPlace(description, descriptions);
-        } else {
-          description = SHARED_DESCRIPTION;
-        }
-
-        return new DomainsetOutput(span, id)
-          .withTitle(title)
-          .withDescription(description)
-          .addFromDomainset(lines)
-          .write();
-      }
-    );
-}
-
-/**
- * Output Surge RULE-SET and Clash classical text format
- */
-async function transformRuleset(parentSpan: Span, sourcePath: string, relativePath: string) {
-  const extname = path.extname(sourcePath);
-  const basename = path.basename(sourcePath, extname);
+  const id = path.basename(sourcePath, extname);
 
   return parentSpan
-    .traceChild(`transform ruleset: ${basename}`)
+    .traceChild(`transform ruleset: ${id}`)
     .traceAsyncFn(async (span) => {
-      const res = await processFile(span, sourcePath);
-      if (res === $skip) return;
+      const type = relativePath.slice(0, relativePath.indexOf(path.sep));
 
-      const id = basename;
-      const [type] = relativePath.slice(0, -extname.length).split(path.sep);
-
-      if (type !== 'ip' && type !== 'non_ip') {
+      if (type !== 'ip' && type !== 'non_ip' && type !== 'domainset') {
         throw new TypeError(`Invalid type: ${type}`);
       }
 
-      const [title, descriptions, lines, sgmodulePathname] = res;
+      const res = await processFile(span, sourcePath);
+      if (res === $skip) return;
 
-      let description: string[];
+      const [title, descriptions, lines, sgmoduleName] = res;
+
+      let finalDescriptions: string[];
       if (descriptions.length) {
-        description = SHARED_DESCRIPTION.slice();
-        description.push('');
-        appendArrayInPlace(description, descriptions);
+        finalDescriptions = SHARED_DESCRIPTION.slice();
+        finalDescriptions.push('');
+        appendArrayInPlace(finalDescriptions, descriptions);
       } else {
-        description = SHARED_DESCRIPTION;
+        finalDescriptions = SHARED_DESCRIPTION;
+      }
+
+      if (type === 'domainset') {
+        return new DomainsetOutput(span, id)
+          .withTitle(title)
+          .withDescription(finalDescriptions)
+          .addFromDomainset(lines)
+          .write();
       }
 
       return new RulesetOutput(span, id, type)
         .withTitle(title)
-        .withDescription(description)
-        .withMitmSgmodulePath(sgmodulePathname)
+        .withDescription(finalDescriptions)
+        .withMitmSgmodulePath(sgmoduleName)
         .addFromRuleset(lines)
         .write();
     });

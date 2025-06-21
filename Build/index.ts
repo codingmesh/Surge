@@ -1,5 +1,7 @@
 import process from 'node:process';
 import os from 'node:os';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 
 import { downloadPreviousBuild } from './download-previous-build';
 import { buildCommon } from './build-common';
@@ -10,7 +12,6 @@ import { buildRejectDomainSet } from './build-reject-domainset';
 import { buildTelegramCIDR } from './build-telegram-cidr';
 import { buildChnCidr } from './build-chn-cidr';
 import { buildSpeedtestDomainSet } from './build-speedtest-domainset';
-import { buildInternalReverseChnCIDR } from './build-internal-reverse-chn-cidr';
 import { buildDomesticRuleset } from './build-domestic-direct-lan-ruleset-dns-mapping-module';
 import { buildStreamService } from './build-stream-service';
 
@@ -27,7 +28,9 @@ import { buildCloudMounterRules } from './build-cloudmounter-rules';
 
 import { createSpan, printTraceResult, whyIsNodeRunning } from './trace';
 import { buildDeprecateFiles } from './build-deprecate-files';
-import { cacheGc } from './lib/make-fetch-happen';
+import path from 'node:path';
+import { CACHE_DIR, ROOT_DIR } from './constants/dir';
+import { isCI } from 'ci-info';
 
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
@@ -37,6 +40,14 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
   process.exit(1);
 });
+
+const removesFiles = [
+  path.join(CACHE_DIR, '.cache.db'),
+  path.join(CACHE_DIR, '.cache.db-shm'),
+  path.join(CACHE_DIR, '.cache.db-wal')
+];
+
+const buildFinishedLock = path.join(ROOT_DIR, '.BUILD_FINISHED');
 
 (async () => {
   console.log('Version:', process.version);
@@ -56,71 +67,60 @@ process.on('unhandledRejection', (reason) => {
       .map((key) => `${key} x ${cpus[key]}`)
       .join('\n')
   }`);
+  if ('availableParallelism' in os) {
+    console.log(`Available parallelism: ${os.availableParallelism()}`);
+  }
+
   console.log(`Memory: ${os.totalmem() / (1024 * 1024)} MiB`);
 
   const rootSpan = createSpan('root');
 
+  if (fs.existsSync(buildFinishedLock)) {
+    fs.unlinkSync(buildFinishedLock);
+  }
+
   try {
+    // only enable why-is-node-running in GitHub Actions debug mode
+    if (isCI && process.env.RUNNER_DEBUG === '1') {
+      await import('why-is-node-running');
+    }
+
     const downloadPreviousBuildPromise = downloadPreviousBuild(rootSpan);
-
     const buildCommonPromise = downloadPreviousBuildPromise.then(() => buildCommon(rootSpan));
-    const buildRejectIPListPromise = downloadPreviousBuildPromise.then(() => buildRejectIPList(rootSpan));
-    const buildAppleCdnPromise = downloadPreviousBuildPromise.then(() => buildAppleCdn(rootSpan));
-    const buildCdnConfPromise = downloadPreviousBuildPromise.then(() => buildCdnDownloadConf(rootSpan));
-    const buildRejectDomainSetPromise = downloadPreviousBuildPromise.then(() => buildRejectDomainSet(rootSpan));
-    const buildTelegramCIDRPromise = downloadPreviousBuildPromise.then(() => buildTelegramCIDR(rootSpan));
-    const buildChnCidrPromise = downloadPreviousBuildPromise.then(() => buildChnCidr(rootSpan));
-    const buildSpeedtestDomainSetPromise = downloadPreviousBuildPromise.then(() => buildSpeedtestDomainSet(rootSpan));
-
-    const buildInternalReverseChnCIDRPromise = buildInternalReverseChnCIDR(rootSpan);
-
-    // const buildInternalChnDomainsPromise = buildInternalChnDomains();
-    const buildDomesticRulesetPromise = downloadPreviousBuildPromise.then(() => buildDomesticRuleset(rootSpan));
-
-    const buildRedirectModulePromise = downloadPreviousBuildPromise.then(() => buildRedirectModule(rootSpan));
-    const buildAlwaysRealIPModulePromise = downloadPreviousBuildPromise.then(() => buildAlwaysRealIPModule(rootSpan));
-
-    const buildStreamServicePromise = downloadPreviousBuildPromise.then(() => buildStreamService(rootSpan));
-
-    const buildMicrosoftCdnPromise = downloadPreviousBuildPromise.then(() => buildMicrosoftCdn(rootSpan));
-
-    const buildSSPanelUIMAppProfilePromise = downloadPreviousBuildPromise.then(() => buildSSPanelUIMAppProfile(rootSpan));
-
-    const downloadMockAssetsPromise = downloadMockAssets(rootSpan);
-
-    const buildCloudMounterRulesPromise = downloadPreviousBuildPromise.then(() => buildCloudMounterRules(rootSpan));
 
     await Promise.all([
+      ...removesFiles.map(file => fsp.rm(file, { force: true })),
       downloadPreviousBuildPromise,
       buildCommonPromise,
-      buildRejectIPListPromise,
-      buildAppleCdnPromise,
-      buildCdnConfPromise,
-      buildRejectDomainSetPromise,
-      buildTelegramCIDRPromise,
-      buildChnCidrPromise,
-      buildSpeedtestDomainSetPromise,
-      buildInternalReverseChnCIDRPromise,
-      buildInternalReverseChnCIDRPromise,
-      // buildInternalChnDomainsPromise,
-      buildDomesticRulesetPromise,
-      buildRedirectModulePromise,
-      buildAlwaysRealIPModulePromise,
-      buildStreamServicePromise,
-      buildMicrosoftCdnPromise,
-      buildSSPanelUIMAppProfilePromise,
-      buildCloudMounterRulesPromise,
-      downloadMockAssetsPromise
+      downloadPreviousBuildPromise.then(() => buildRejectIPList(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildAppleCdn(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildCdnDownloadConf(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildRejectDomainSet(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildTelegramCIDR(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildChnCidr(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildSpeedtestDomainSet(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildDomesticRuleset(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildRedirectModule(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildAlwaysRealIPModule(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildStreamService(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildMicrosoftCdn(rootSpan)),
+      Promise.all([
+        downloadPreviousBuildPromise,
+        buildCommonPromise
+      ]).then(() => buildSSPanelUIMAppProfile(rootSpan)),
+      downloadPreviousBuildPromise.then(() => buildCloudMounterRules(rootSpan)),
+      downloadMockAssets(rootSpan)
     ]);
 
-    await Promise.all([
-      buildDeprecateFiles(rootSpan).then(() => buildPublic(rootSpan)),
-      cacheGc(rootSpan)
-    ]);
+    await buildDeprecateFiles(rootSpan);
+    await buildPublic(rootSpan);
 
     rootSpan.stop();
 
     printTraceResult(rootSpan.traceResult);
+
+    // write a file to demonstrate that the build is finished
+    fs.writeFileSync(buildFinishedLock, 'BUILD_FINISHED\n');
 
     // Finish the build to avoid leaking timer/fetch ref
     await whyIsNodeRunning();

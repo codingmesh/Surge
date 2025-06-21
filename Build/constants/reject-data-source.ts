@@ -1,61 +1,118 @@
-import { TTL } from '../lib/cache-filesystem';
-
 export const DEBUG_DOMAIN_TO_FIND: string | null = null; // example.com | null
 
-type HostsSource = [main: string, mirrors: string[] | null, includeAllSubDomain: boolean, ttl: number];
+type HostsSource = [main: string, mirrors: string[] | null, includeAllSubDomain: boolean, allowEmptyRemote?: boolean];
 
 export const HOSTS: HostsSource[] = [
-  // have not been updated for more than a year, so we set a 14 days cache ttl
-  ['https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt', null, true, TTL.TWO_WEEKS()],
-  ['https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Extension/GoodbyeAds-Xiaomi-Extension.txt', null, false, TTL.ONE_WEEK()],
-  ['https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Extension/GoodbyeAds-Huawei-AdBlock.txt', null, false, TTL.ONE_WEEK()],
-  ['https://raw.githubusercontent.com/durablenapkin/block/master/luminati.txt', null, true, TTL.THREE_HOURS()],
-  ['https://raw.githubusercontent.com/durablenapkin/block/master/tvstream.txt', null, true, TTL.THREE_HOURS()]
+  // WindowsSpyBlocker hasn't been updated since 2022-06-16, its content has been merged into domainset/reject.conf
+  // [
+  //   'https://cdn.jsdelivr.net/gh/crazy-max/WindowsSpyBlocker@master/data/hosts/spy.txt',
+  //   ['https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt'],
+  //   true
+  // ],
+  [
+    'https://cdn.jsdelivr.net/gh/jerryn70/GoodbyeAds@master/Extension/GoodbyeAds-Xiaomi-Extension.txt',
+    ['https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Extension/GoodbyeAds-Xiaomi-Extension.txt'],
+    false
+  ],
+  [
+    'https://cdn.jsdelivr.net/gh/jerryn70/GoodbyeAds@master/Extension/GoodbyeAds-Huawei-AdBlock.txt',
+    ['https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Extension/GoodbyeAds-Huawei-AdBlock.txt'],
+    false
+  ],
+  [
+    'https://cdn.jsdelivr.net/gh/jerryn70/GoodbyeAds@master/Extension/GoodbyeAds-Samsung-AdBlock.txt',
+    ['https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Extension/GoodbyeAds-Samsung-AdBlock.txt'],
+    false
+  ]
 ];
 
 export const HOSTS_EXTRA: HostsSource[] = [
-  // This stupid hosts blocks t.co, so we determine that this is also bullshit, so it is also extra
+  // This stupid hosts blocks t.co, so we determine that this is also bullshit, so it is extra
   [
     'https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext',
     ['https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/thirdparties/pgl.yoyo.org/as/serverlist'],
-    true,
-    TTL.THREE_HOURS()
+    true
   ],
   // Dan Pollock's hosts file, 0.0.0.0 version is 30 KiB smaller
-  ['https://someonewhocares.org/hosts/zero/hosts', null, true, TTL.THREE_HOURS()],
-  // ad-wars is not actively maintained, so we set a 7 days cache ttl
-  ['https://raw.githubusercontent.com/jdlingyu/ad-wars/master/hosts', null, false, TTL.TWO_WEEKS()]
+  [
+    'https://proxy.cdn.skk.moe/https/someonewhocares.org/hosts/zero/hosts',
+    ['https://someonewhocares.org/hosts/zero/hosts'],
+    true
+  ],
+  // ad-wars is not actively maintained since 2023.11 due to Tencent's Legal Notice
+  // All contents has been intergrated into the reject.conf file
+  // [
+  //   'https://cdn.jsdelivr.net/gh/jdlingyu/ad-wars@master/hosts',
+  //   ['https://raw.githubusercontent.com/jdlingyu/ad-wars/master/hosts'],
+  //   false
+  // ],
+  // hoshsadiq adblock-nocoin-list extra
+  [
+    'https://cdn.jsdelivr.net/gh/hoshsadiq/adblock-nocoin-list@master/hosts.txt',
+    ['https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/hosts.txt'],
+    true
+  ]
 ];
 
 export const DOMAIN_LISTS: HostsSource[] = [
   // CoinBlockerList
-  // Although the hosts file is still actively maintained, the hosts_browser file is not updated since 2021-07, so we set a 14 days cache ttl
-  ['https://zerodot1.gitlab.io/CoinBlockerLists/list_browser.txt', [], true, TTL.TWO_WEEKS()]
+  // The CoinBlockerList is no longer maintained and even close-source, so we no longer trust it
+  // instead we maintain a list of our own
+  // [
+  //   'https://zerodot1.gitlab.io/CoinBlockerLists/list_browser.txt',
+  //   [],
+  //   true,
+  // ]
 ];
 
 export const DOMAIN_LISTS_EXTRA: HostsSource[] = [
   // CoinBlockerList - Full
-  // Lat update 8 months ago, so we set a 14 days cache ttl
-  ['https://zerodot1.gitlab.io/CoinBlockerLists/list.txt', [], true, TTL.TWO_WEEKS()],
+  // The CoinBlockerList is no longer maintained and even close-source, so we no longer trust it
+  // instead we maintain a list of our own
 
   // BarbBlock
-  // The barbblock list has never been updated since 2019-05, so we set a 14 days cache ttl
+  // The barbblock list has never been updated since ~~2019-05~~ 2023-10, so we use jsdelivr instead
   [
-    'https://paulgb.github.io/BarbBlock/blacklists/domain-list.txt',
-    ['https://raw.githubusercontent.com/paulgb/BarbBlock/refs/heads/main/blacklists/domain-list.txt'],
-    true,
-    TTL.TWO_WEEKS()
+    'https://cdn.jsdelivr.net/gh/paulgb/BarbBlock@main/blacklists/domain-list.txt',
+    ['https://paulgb.github.io/BarbBlock/blacklists/domain-list.txt'],
+    true
   ],
   // DigitalSide Threat-Intel - OSINT Hub
   // Update once per day
-  ['https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt', [], true, TTL.ONE_DAY()],
+  ['https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt', [], true],
   // AdGuard CNAME Filter Combined
-  // Update on a 7 days basis, so we add a 3 hours cache ttl
-  ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_ads_justdomains.txt', [], true, TTL.THREE_DAYS()],
-  ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_trackers_justdomains.txt', [], true, TTL.THREE_DAYS()],
-  ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_clickthroughs_justdomains.txt', [], true, TTL.THREE_DAYS()],
-  ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_microsites_justdomains.txt', [], true, TTL.THREE_DAYS()],
-  // ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_mail_trackers_justdomains.txt', [], true, TTL.THREE_DAYS()],
+  // Update on a 7 days basis, so we can also use jsDelivr as primary URL
+  [
+    'https://cdn.jsdelivr.net/gh/AdguardTeam/cname-trackers@master/data/combined_disguised_ads_justdomains.txt',
+    [
+      'https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_ads_justdomains.txt'
+    ],
+    true
+  ],
+  [
+    'https://cdn.jsdelivr.net/gh/AdguardTeam/cname-trackers@master/data/combined_disguised_trackers_justdomains.txt',
+    [
+      'https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_trackers_justdomains.txt'
+    ],
+    true
+  ],
+  // Disable clickthrough set. Many mail SaaS uses this kind of technique on their links (even normal links)
+  // E.g. links.strava.com
+  // [
+  //   'https://cdn.jsdelivr.net/gh/AdguardTeam/cname-trackers@master/data/combined_disguised_clickthroughs_justdomains.txt',
+  //   [
+  //     'https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_clickthroughs_justdomains.txt'
+  //   ],
+  //   true
+  // ],
+  [
+    'https://cdn.jsdelivr.net/gh/AdguardTeam/cname-trackers@master/data/combined_disguised_microsites_justdomains.txt',
+    [
+      'https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_microsites_justdomains.txt'
+    ],
+    true
+  ],
+  // ['https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_mail_trackers_justdomains.txt', [], true],
   // Curben's PUP Domains Blocklist
   // The PUP filter has paused the update since 2023-05, so we set a 14 days cache ttl, and move it to extra
   // [
@@ -67,7 +124,7 @@ export const DOMAIN_LISTS_EXTRA: HostsSource[] = [
   //     // 'https://curbengh.github.io/pup-filter/pup-filter-domains.txt',
   //     // 'https://malware-filter.pages.dev/pup-filter-domains.txt'
   //   ],
-  //   true, TTL.TWO_WEEKS()
+  //   true
   // ],
   // Curben's UrlHaus Malicious URL Blocklist
   [
@@ -78,15 +135,19 @@ export const DOMAIN_LISTS_EXTRA: HostsSource[] = [
       'https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-domains.txt',
       'https://curbengh.github.io/urlhaus-filter/urlhaus-filter-domains.txt'
     ],
-    true, TTL.THREE_HOURS()
-  ],
+    true
+  ]
   // Spam404
-  // Not actively maintained, let's use a 10 days cache ttl
-  ['https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt', [], true, TTL.TEN_DAYS()]
+  // Not actively maintained, let's consider it is dead
+  // [
+  //   'https://cdn.jsdelivr.net/gh/Spam404/lists@master/main-blacklist.txt',
+  //   ['https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt'],
+  //   true
+  // ]
 ];
 
 export const PHISHING_HOSTS_EXTRA: HostsSource[] = [
-  ['https://raw.githubusercontent.com/durablenapkin/scamblocklist/master/hosts.txt', [], true, TTL.THREE_DAYS()]
+  ['https://raw.githubusercontent.com/durablenapkin/scamblocklist/master/hosts.txt', [], true]
 ];
 
 export const PHISHING_DOMAIN_LISTS_EXTRA: HostsSource[] = [
@@ -98,31 +159,34 @@ export const PHISHING_DOMAIN_LISTS_EXTRA: HostsSource[] = [
       'https://malware-filter.gitlab.io/malware-filter/phishing-filter-domains.txt',
       'https://curbengh.github.io/phishing-filter/phishing-filter-domains.txt'
     ],
-    true, TTL.THREE_HOURS()
+    true
   ],
   [
     'https://phishing.army/download/phishing_army_blocklist.txt',
     [],
-    true, TTL.THREE_HOURS()
+    true
   ]
 ];
 
-type AdGuardFilterSource = [main: string, mirrors: string[] | null, ttl: number, allowThirdParty?: boolean];
+type AdGuardFilterSource = [main: string, mirrors: string[] | null, includeThirdParty?: boolean];
 
 export const ADGUARD_FILTERS: AdGuardFilterSource[] = [
-  // no coin list adguard list is more maintained than its hosts
-  ['https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/nocoin.txt', [], TTL.TWO_WEEKS()],
-  // EasyList
+  // EasyList -- Use AdGuard Base Filter w/ EasyList
+  // [
+  //   'https://easylist.to/easylist/easylist.txt',
+  //   [
+  //     'https://easylist-downloads.adblockplus.org/easylist.txt',
+  //     'https://secure.fanboy.co.nz/easylist.txt',
+  //     'https://ublockorigin.github.io/uAssetsCDN/thirdparties/easylist.txt',
+  //     'https://ublockorigin.pages.dev/thirdparties/easylist.txt',
+  //     'https://raw.githubusercontent.com/easylist/easylist/gh-pages/easylist.txt',
+  //     'https://filters.adtidy.org/extension/ublock/filters/101_optimized.txt'
+  //   ]
+  // ],
+  // AdGuard Base Filter -- Use AdGuard Base Filter w/ EasyList
   [
-    'https://easylist.to/easylist/easylist.txt',
-    [
-      'https://easylist-downloads.adblockplus.org/easylist.txt',
-      'https://secure.fanboy.co.nz/easylist.txt',
-      'https://ublockorigin.github.io/uAssetsCDN/thirdparties/easylist.txt',
-      'https://ublockorigin.pages.dev/thirdparties/easylist.txt',
-      'https://raw.githubusercontent.com/easylist/easylist/gh-pages/easylist.txt'
-    ],
-    TTL.TWLVE_HOURS()
+    'https://filters.adtidy.org/extension/ublock/filters/2_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/2_optimized.txt']
   ],
   // EasyPrivacy
   [
@@ -132,47 +196,66 @@ export const ADGUARD_FILTERS: AdGuardFilterSource[] = [
       'https://secure.fanboy.co.nz/easyprivacy.txt',
       'https://ublockorigin.github.io/uAssetsCDN/thirdparties/easyprivacy.txt',
       'https://ublockorigin.pages.dev/thirdparties/easyprivacy.txt',
+      'https://filters.adtidy.org/extension/ublock/filters/118_optimized.txt',
       'https://raw.githubusercontent.com/easylist/easylist/gh-pages/easyprivacy.txt'
-    ],
-    TTL.TWLVE_HOURS()
+    ]
   ],
-  // AdGuard DNS Filter
-  [
-    'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt',
-    [
-      'https://filters.adtidy.org/extension/ublock/filters/15_optimized.txt',
-      'https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt'
-    ],
-    TTL.TWLVE_HOURS()
-  ],
-  // AdGuard Base Filter
-  ['https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt', null, TTL.THREE_HOURS()],
+  // AdGuard Base Filter: Use AdGuard Base Filter w/ EasyList
+  // [
+  //   'https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt',
+  //   ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt']
+  // ],
   // AdGuard Mobile AD
-  ['https://filters.adtidy.org/extension/ublock/filters/11_optimized.txt', null, TTL.THREE_HOURS()],
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/11_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt']
+  ],
   // AdGuard Tracking Protection
-  ['https://filters.adtidy.org/extension/ublock/filters/3_optimized.txt', null, TTL.THREE_HOURS()],
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/3_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/3_optimized.txt']
+  ],
   // AdGuard Chinese filter (EasyList China + AdGuard Chinese filter)
-  ['https://filters.adtidy.org/extension/ublock/filters/224_optimized.txt', null, TTL.THREE_HOURS()],
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/224_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/224_optimized.txt']
+  ],
   // GameConsoleAdblockList
   // Update almost once per 1 to 3 months, let's set a 10 days cache ttl
-  ['https://raw.githubusercontent.com/DandelionSprout/adfilt/master/GameConsoleAdblockList.txt', null, TTL.TEN_DAYS()],
-  // PiHoleBlocklist
-  // Update almost once per 3 months, let's set a 10 days cache ttl
   [
-    'https://perflyst.github.io/PiHoleBlocklist/SmartTV-AGH.txt',
-    [
-      'https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV-AGH.txt'
-    ],
-    TTL.TEN_DAYS()
+    'https://cdn.jsdelivr.net/gh/DandelionSprout/adfilt@master/GameConsoleAdblockList.txt',
+    ['https://raw.githubusercontent.com/DandelionSprout/adfilt/master/GameConsoleAdblockList.txt']
   ],
+  // PiHoleBlocklist
+  // Hasn't been updated for two years. Merged to reject.conf
+  // [
+  //   'https://cdn.jsdelivr.net/gh/Perflyst/PiHoleBlocklist@master/SmartTV-AGH.txt',
+  //   [
+  //     'https://perflyst.github.io/PiHoleBlocklist/SmartTV-AGH.txt',
+  //     'https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV-AGH.txt'
+  //   ]
+  // ],
   // uBlock Origin Unbreak
   [
     'https://ublockorigin.github.io/uAssetsCDN/filters/unbreak.min.txt',
     [
       'https://ublockorigin.pages.dev/filters/unbreak.min.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ]
+  //
+  // [
+  //   'https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareAdGuardHome.txt',
+  //   [
+  //     'https://adguardteam.github.io/HostlistsRegistry/assets/filter_12.txt'
+  //   ]
+  // ]
+  // Stalkerware
+  // [
+  //   'https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts',
+  //   [
+  //     'https://adguardteam.github.io/HostlistsRegistry/assets/filter_31.txt'
+  //   ]
+  // ]
 ];
 
 export const ADGUARD_FILTERS_WHITELIST: AdGuardFilterSource[] = [
@@ -180,92 +263,105 @@ export const ADGUARD_FILTERS_WHITELIST: AdGuardFilterSource[] = [
     'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/exceptions.txt',
     [
       'https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/exceptions.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ],
   [
     'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/exclusions.txt',
     [
       'https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/exclusions.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ]
 ];
 
 export const ADGUARD_FILTERS_EXTRA: AdGuardFilterSource[] = [
+  // AdGuard DNS Filter
+  // way too many other countries' domains (JP, Spanish, RU, VN, Turkish, Ukarainian, Dutch, etc.)
+  // EasyList, EasyPrivacy, Chinese and general filters are already included in base data source
+  [
+    'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt',
+    [
+      'https://filters.adtidy.org/extension/ublock/filters/15_optimized.txt',
+      'https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt'
+    ]
+  ],
+  // no coin list adguard list is more maintained than its hosts
+  [
+    'https://cdn.jsdelivr.net/gh/hoshsadiq/adblock-nocoin-list@master/nocoin.txt',
+    ['https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/nocoin.txt'],
+    true
+  ],
   // AdGuard Annoyances filter
-  ['https://filters.adtidy.org/extension/ublock/filters/14_optimized.txt', null, TTL.THREE_HOURS(), true],
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/14_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/14_optimized.txt'],
+    true
+  ],
   // AdGuard Cookie Notices, included in Annoyances filter
-  // ['https://filters.adtidy.org/extension/ublock/filters/18_optimized.txt', null, TTL.THREE_HOURS(), true],
+  // ['https://filters.adtidy.org/extension/ublock/filters/18_optimized.txt', null, true],
   // EasyList Germany filter, not even included in extra for now
   // [
   //   'https://easylist.to/easylistgermany/easylistgermany.txt',
   //   [
   //     'https://easylist-downloads.adblockplus.org/easylistgermany.txt'
   //   ],
-  //   TTL.TWLVE_HOURS()
+  //
   // ],
   // AdGuard Japanese filter
-  ['https://filters.adtidy.org/extension/ublock/filters/7_optimized.txt', null, TTL.THREE_HOURS()],
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/7_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/7_optimized.txt']
+
+  ],
   // uBlock Origin Filter List
   [
     'https://ublockorigin.github.io/uAssetsCDN/filters/filters.min.txt',
     [
       'https://ublockorigin.pages.dev/filters/filters.min.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ],
   // AdGuard Popup Overlay - included in Annoyances filter
-  // ['https://filters.adtidy.org/extension/ublock/filters/19_optimized.txt', null, TTL.THREE_HOURS(), true],
+  // ['https://filters.adtidy.org/extension/ublock/filters/19_optimized.txt', null, true],
   // AdGuard Mobile Banner
   // almost all generic rule
-  // ['https://filters.adtidy.org/extension/ublock/filters/20_optimized.txt', null, TTL.THREE_HOURS()],
+  // ['https://filters.adtidy.org/extension/ublock/filters/20_optimized.txt', null],
   // uBlock Origin Badware Risk List
   [
     'https://ublockorigin.github.io/uAssetsCDN/filters/badware.min.txt',
     [
       'https://ublockorigin.pages.dev/filters/badware.min.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ],
   // uBlock Origin Privacy List
   [
     'https://ublockorigin.github.io/uAssetsCDN/filters/privacy.min.txt',
     [
       'https://ublockorigin.pages.dev/filters/privacy.min.txt'
-    ],
-    TTL.THREE_HOURS()
+    ]
   ],
   // uBlock Origin Resource Abuse: merged in uBlock Origin Privacy List
   // [
   //   'https://ublockorigin.github.io/uAssetsCDN/filters/resource-abuse.txt',
   //   ['https://ublockorigin.pages.dev/filters/resource-abuse.txt']
   // ],
-  // uBlock Origin Annoyances
+  // uBlock Origin Annoyances (the un-merged of Fanboy Annoyances List)
   [
     'https://ublockorigin.github.io/uAssetsCDN/filters/annoyances.min.txt',
-    ['https://ublockorigin.pages.dev/filters/annoyances.min.txt'],
-    TTL.THREE_HOURS()
+    ['https://ublockorigin.pages.dev/filters/annoyances.min.txt']
   ],
   // EasyList Annoyances
   [
     'https://ublockorigin.github.io/uAssetsCDN/thirdparties/easylist-annoyances.txt',
-    ['https://ublockorigin.pages.dev/thirdparties/easylist-annoyances.txt'],
-    TTL.THREE_HOURS()
+    ['https://ublockorigin.pages.dev/thirdparties/easylist-annoyances.txt']
   ],
-  // Dandelion Sprout's Annoyances
-  ['https://filters.adtidy.org/extension/ublock/filters/250_optimized.txt', null, TTL.THREE_HOURS(), true],
   // EasyList - Newsletters
   [
     'https://ublockorigin.github.io/uAssetsCDN/thirdparties/easylist-newsletters.txt',
-    ['https://ublockorigin.pages.dev/thirdparties/easylist-newsletters.txt'],
-    TTL.THREE_HOURS()
+    ['https://ublockorigin.pages.dev/thirdparties/easylist-newsletters.txt']
   ],
   // EasyList - Notifications
   [
     'https://ublockorigin.github.io/uAssets/thirdparties/easylist-notifications.txt',
-    ['https://ublockorigin.pages.dev/thirdparties/easylist-notifications.txt'],
-    TTL.THREE_HOURS()
+    ['https://ublockorigin.pages.dev/thirdparties/easylist-notifications.txt']
   ],
   // Fanboy Cookie Monster (EasyList Cookie List)
   [
@@ -273,8 +369,21 @@ export const ADGUARD_FILTERS_EXTRA: AdGuardFilterSource[] = [
     [
       'https://ublockorigin.pages.dev/thirdparties/easylist-cookies.txt',
       'https://secure.fanboy.co.nz/fanboy-cookiemonster_ubo.txt'
+    ]
+  ],
+  // Dandelion Sprout's Annoyances
+  [
+    'https://filters.adtidy.org/extension/ublock/filters/250_optimized.txt',
+    ['https://proxy.cdn.skk.moe/https/filters.adtidy.org/extension/ublock/filters/250_optimized.txt'],
+    true
+  ],
+  // Adblock Warning Removal List
+  [
+    'https://easylist-downloads.adblockplus.org/antiadblockfilters.txt',
+    [
+      'https://filters.adtidy.org/extension/ublock/filters/207_optimized.txt'
     ],
-    TTL.TWLVE_HOURS()
+    true
   ]
 ];
 
@@ -289,6 +398,7 @@ export const CRASHLYTICS_WHITELIST = [
   // Sentry
   '.ingest.sentry.io',
   '.ingest.us.sentry.io',
+  '.ingest.de.sentry.io',
   // bugsnag
   '.sessions.bugsnag.com',
   '.notify.bugsnag.com',
@@ -305,6 +415,7 @@ export const CRASHLYTICS_WHITELIST = [
   '.metric.gstatic.com',
   // Misc
   'telemetry.1passwordservices.com',
+  'b5x-sentry.1passwordservices.com',
   'events.tableplus.com',
   'telemetry.nextjs.org',
   'telemetry.vercel.com',
@@ -357,13 +468,11 @@ export const PREDEFINED_WHITELIST = [
   '.ip6-allhosts',
   '.mcastprefix',
   '.skk.moe',
-  '.cdn.cloudflare.net', // Surge/Clash doesn't support CNAME
   'analytics.google.com',
   '.cloud.answerhub.com',
   'ae01.alicdn.com',
   '.whoami.akamai.net',
   '.whoami.ds.akahelp.net',
-  'pxlk9.net.', // This one is malformed from EasyList, which I will manually add instead
   '.instant.page', // No, it doesn't violate anyone's privacy. I will whitelist it
   '.piwik.pro',
   'mixpanel.com',
@@ -404,16 +513,68 @@ export const PREDEFINED_WHITELIST = [
   'ab.chatgpt.com', // EasyPrivacy blocks this
   'jnn-pa.googleapis.com', // ad-wars
   'imasdk.googleapis.com', // ad-wars
-  '.l.qq.com', // ad-wars
   '.in-addr.arpa', // rDNS
   '.ip6.arpa', // rDNS
   '.clients.your-server.de', // rDNS .static.183.213.201.138.clients.your-server.de
   '.bc.googleusercontent.com', // rDNS 218.178.172.34.bc.googleusercontent.com
   '.host.secureserver.net', // rDNS .64.149.167.72.host.secureserver.net,
   '.ip.linodeusercontent.com', // rDNS 45-79-169-153.ip.linodeusercontent.com
+  '.static.akamaitechnologies.com', // rDNS a23-57-90-107.deploy.static.akamaitechnologies.com
+  '.compute.amazonaws.com', // rDNS ec2-3-22-96-128.us-east-2.compute.amazonaws.com
   '.shoppy.gg', // Spam404
   'transcend-cdn.com', // AdGuard Annoyances
   'store1.gofile.io', // Dandelion Sprout's Annoyances List
   'ad.12306.cn', // https://github.com/jdlingyu/ad-wars
-  '.ib.snssdk.com' // AdGuard Tracking Protection -- breaks 今日头条专业版
+  '.ib.snssdk.com', // AdGuard Tracking Protection -- breaks 今日头条专业版
+  '.nstool.netease.com', // it is only used to check local dns
+  '.wns.windows.com', // Windows Push Notifications. Besides there is no point in adding these
+
+  'widget-mediator.zopim.com', // breaking zendesk chat
+
+  '.llnw.net', // entire llnm.net has dead
+
+  'repo.huaweicloud.com', // urlhaus
+  '.hubspotlinks.com', // Peter Lowe Hosts
+  'cldup.com', // OSINT
+  'cuty.io', // short domain like bitly, blocked by phishing army
+  'links.strava.com', // AdGuard CNAME Clickthrough Filters
+  'email.strava.com', // EasyList
+  'insideruser.microsoft.com', // WindowsSpyBlocker
+
+  // Doesn't make sense: CNAME domains
+  '.cdn.cloudflare.net',
+  '.apple-dns.net',
+  '.data.microsoft.com.akadns.net',
+
+  // Expired domains
+  '.expobarrio.com',
+  '.hamdandates.com',
+  '.amzone.co.jp',
+
+  // Migrate from SmartTV-AGH List
+  'mhc-ajax-eu.myhomescreen.tv',
+  'mhc-ajax-eu-s2.myhomescreen.tv',
+  'mhc-xpana-eu.myhomescreen.tv',
+  'mhc-xpana-eu-s2.myhomescreen.tv',
+  'infolink.pavv.co.kr',
+  'hbbtv.zdf.de',
+  'hbbtv.prosieben.de',
+  'hbbtv.redbutton.de',
+  'hbbtv.kika.de'
 ];
+
+export const BOTNET_FILTER = [
+  'https://malware-filter.pages.dev/botnet-filter-dnscrypt-blocked-ips.txt',
+  [
+    'https://botnet-filter.pages.dev/botnet-filter-dnscrypt-blocked-ips.txt',
+    'https://malware-filter.gitlab.io/malware-filter/botnet-filter-dnscrypt-blocked-ips.txt',
+    'https://malware-filter.gitlab.io/botnet-filter/botnet-filter-dnscrypt-blocked-ips.txt'
+    // 'https://curbengh.github.io/botnet-filter/botnet-filter-dnscrypt-blocked-ips.txt',
+    // https://curbengh.github.io/malware-filter/botnet-filter-dnscrypt-blocked-ips.txt
+  ]
+] as const;
+
+export const BOGUS_NXDOMAIN_DNSMASQ = [
+  'https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list@master/bogus-nxdomain.china.conf',
+  ['https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/bogus-nxdomain.china.conf']
+] as const;

@@ -91,8 +91,7 @@ describe('Trie', () => {
     trie.add('example.com');
     trie.add('moe.sb');
 
-    expect(trie.delete('')).toBe(false);
-    expect(trie.delete('')).toBe(false);
+    expect(trie.delete('no-match.com')).toBe(false);
     expect(trie.delete('example.org')).toBe(false);
 
     expect(trie.delete('skk.moe')).toBe(true);
@@ -126,12 +125,12 @@ describe('Trie', () => {
     trie.add('cdn.example.com');
     trie.add('example.org');
 
-    expect(trie.find('example.com')).toStrictEqual(['example.com', 'blog.example.com', 'cdn.example.com']);
-    expect(trie.find('com')).toStrictEqual(['example.com', 'blog.example.com', 'cdn.example.com']);
-    expect(trie.find('.example.com')).toStrictEqual(['blog.example.com', 'cdn.example.com']);
+    expect(trie.find('example.com')).toStrictEqual(['example.com', 'cdn.example.com', 'blog.example.com']);
+    expect(trie.find('com')).toStrictEqual(['example.com', 'cdn.example.com', 'blog.example.com']);
+    expect(trie.find('.example.com')).toStrictEqual(['cdn.example.com', 'blog.example.com']);
     expect(trie.find('org')).toStrictEqual(['example.org']);
     expect(trie.find('example.net')).toStrictEqual([]);
-    expect(trie.find('')).toStrictEqual(['example.com', 'example.org', 'blog.example.com', 'cdn.example.com']);
+    expect(trie.dump()).toStrictEqual(['example.org', 'example.com', 'cdn.example.com', 'blog.example.com']);
   });
 
   it('should be possible to retrieve items matching the given prefix even with a smol trie', () => {
@@ -148,7 +147,7 @@ describe('Trie', () => {
     expect(trie.find('.example.com')).toStrictEqual(['.example.com']);
     expect(trie.find('org')).toStrictEqual(['example.org']);
     expect(trie.find('example.net')).toStrictEqual([]);
-    expect(trie.find('')).toStrictEqual(['.example.com', 'example.org']);
+    expect(trie.dump()).toStrictEqual(['example.org', '.example.com']);
   });
 
   it('should be possible to create a trie from an arbitrary iterable.', () => {
@@ -174,14 +173,14 @@ describe('surge domainset dedupe', () => {
   it('should match subdomain - 1', () => {
     const trie = createTrie(['www.noc.one', 'www.sukkaw.com', 'blog.skk.moe', 'image.cdn.skk.moe', 'cdn.sukkaw.net'], false);
 
-    expect(trie.find('.skk.moe')).toStrictEqual(['blog.skk.moe', 'image.cdn.skk.moe']);
+    expect(trie.find('.skk.moe')).toStrictEqual(['image.cdn.skk.moe', 'blog.skk.moe']);
     expect(trie.find('.sukkaw.com')).toStrictEqual(['www.sukkaw.com']);
   });
 
   it('should match subdomain - 2', () => {
     const trie = createTrie(['www.noc.one', 'www.sukkaw.com', '.skk.moe', 'blog.skk.moe', 'image.cdn.skk.moe', 'cdn.sukkaw.net'], false);
 
-    expect(trie.find('.skk.moe')).toStrictEqual(['.skk.moe', 'blog.skk.moe', 'image.cdn.skk.moe']);
+    expect(trie.find('.skk.moe')).toStrictEqual(['.skk.moe', 'image.cdn.skk.moe', 'blog.skk.moe']);
     expect(trie.find('.sukkaw.com')).toStrictEqual(['www.sukkaw.com']);
   });
 
@@ -192,6 +191,28 @@ describe('surge domainset dedupe', () => {
 });
 
 describe('smol tree', () => {
+  it('should init tree', () => {
+    const trie = createTrie([
+      'skk.moe',
+      'anotherskk.moe',
+      'blog.anotherskk.moe',
+      'blog.skk.moe',
+      '.cdn.local',
+      'blog.img.skk.local',
+      'img.skk.local'
+    ], true);
+
+    expect(trie.dump()).toStrictEqual([
+      'img.skk.local',
+      'blog.img.skk.local',
+      '.cdn.local',
+      'anotherskk.moe',
+      'blog.anotherskk.moe',
+      'skk.moe',
+      'blog.skk.moe'
+    ]);
+  });
+
   it('should create simple tree - 1', () => {
     const trie = createTrie([
       '.skk.moe', 'blog.skk.moe', '.cdn.skk.moe', 'skk.moe',
@@ -200,10 +221,10 @@ describe('smol tree', () => {
     ], true);
 
     expect(trie.dump()).toStrictEqual([
-      '.skk.moe',
-      'www.noc.one',
+      '.sub.example.com',
       'cdn.noc.one',
-      '.sub.example.com'
+      'www.noc.one',
+      '.skk.moe'
     ]);
   });
 
@@ -241,10 +262,10 @@ describe('smol tree', () => {
     ], true);
 
     expect(trie.dump()).toStrictEqual([
-      'commercial.shouji.360.cn',
       'cdn.creative.medialytics.com',
-      'act.commercial.shouji.360.cn',
-      'px.cdn.creative.medialytics.com'
+      'px.cdn.creative.medialytics.com',
+      'commercial.shouji.360.cn',
+      'act.commercial.shouji.360.cn'
     ]);
   });
 
@@ -257,14 +278,14 @@ describe('smol tree', () => {
     ], true);
 
     expect(trie.dump()).toStrictEqual([
-      'skk.moe',
       'anotherskk.moe',
-      'blog.skk.moe',
-      'blog.anotherskk.moe'
+      'blog.anotherskk.moe',
+      'skk.moe',
+      'blog.skk.moe'
     ]);
   });
 
-  it('should efficiently whitelist domains', () => {
+  it('should effctly whitelist domains', () => {
     const trie = createTrie([
       'skk.moe',
       'anotherskk.moe',
@@ -275,47 +296,37 @@ describe('smol tree', () => {
       'img.skk.local'
     ], true);
 
-    expect(trie.dump()).toStrictEqual([
-      'skk.moe',
-      'anotherskk.moe',
-      '.cdn.local',
-      'blog.skk.moe',
-      'blog.anotherskk.moe',
-      'img.skk.local',
-      'blog.img.skk.local'
-    ]);
-
     trie.whitelist('.skk.moe');
 
     expect(trie.dump()).toStrictEqual([
-      'anotherskk.moe',
-      '.cdn.local',
-      'blog.anotherskk.moe',
       'img.skk.local',
-      'blog.img.skk.local'
+      'blog.img.skk.local',
+      '.cdn.local',
+      'anotherskk.moe',
+      'blog.anotherskk.moe'
     ]);
 
     trie.whitelist('anotherskk.moe');
     expect(trie.dump()).toStrictEqual([
-      '.cdn.local',
-      'blog.anotherskk.moe',
       'img.skk.local',
-      'blog.img.skk.local'
+      'blog.img.skk.local',
+      '.cdn.local',
+      'blog.anotherskk.moe'
     ]);
 
     trie.add('anotherskk.moe');
     trie.whitelist('.anotherskk.moe');
 
     expect(trie.dump()).toStrictEqual([
-      '.cdn.local',
       'img.skk.local',
-      'blog.img.skk.local'
+      'blog.img.skk.local',
+      '.cdn.local'
     ]);
 
     trie.whitelist('img.skk.local');
     expect(trie.dump()).toStrictEqual([
-      '.cdn.local',
-      'blog.img.skk.local'
+      'blog.img.skk.local',
+      '.cdn.local'
     ]);
 
     trie.whitelist('cdn.local');
@@ -338,15 +349,14 @@ describe('smol tree', () => {
     ], true);
 
     expect(trie.dump()).toStrictEqual([
-      '.t.co',
+      'cdn.example.com', 'blog.cdn.example.com',
       '.skk.moe',
-      'cdn.example.com', 'blog.cdn.example.com'
+      '.t.co'
     ]);
 
     trie.whitelist('.t.co');
     expect(trie.dump()).toStrictEqual([
-      '.skk.moe',
-      'cdn.example.com', 'blog.cdn.example.com'
+      'cdn.example.com', 'blog.cdn.example.com', '.skk.moe'
     ]);
 
     trie.whitelist('skk.moe');

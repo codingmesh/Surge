@@ -2,28 +2,47 @@
 import path from 'node:path';
 import process from 'node:process';
 
-import { processHosts, processFilterRules, processDomainLists } from './lib/parse-filter';
+import { processHostsWithPreload } from './lib/parse-filter/hosts';
+import { processDomainListsWithPreload } from './lib/parse-filter/domainlists';
+import { processFilterRulesWithPreload } from './lib/parse-filter/filters';
 
-import { HOSTS, ADGUARD_FILTERS, PREDEFINED_WHITELIST, DOMAIN_LISTS, HOSTS_EXTRA, DOMAIN_LISTS_EXTRA, ADGUARD_FILTERS_EXTRA, PHISHING_DOMAIN_LISTS_EXTRA, ADGUARD_FILTERS_WHITELIST } from './constants/reject-data-source';
-import { compareAndWriteFile } from './lib/create-file';
-import { readFileByLine, readFileIntoProcessedArray } from './lib/fetch-text-by-line';
+import { HOSTS, ADGUARD_FILTERS, PREDEFINED_WHITELIST, DOMAIN_LISTS, HOSTS_EXTRA, DOMAIN_LISTS_EXTRA, ADGUARD_FILTERS_EXTRA, ADGUARD_FILTERS_WHITELIST, PHISHING_HOSTS_EXTRA, PHISHING_DOMAIN_LISTS_EXTRA, BOTNET_FILTER, BOGUS_NXDOMAIN_DNSMASQ } from './constants/reject-data-source';
+import { readFileIntoProcessedArray } from './lib/fetch-text-by-line';
 import { task } from './trace';
 // tldts-experimental is way faster than tldts, but very little bit inaccurate
 // (since it is hashes based). But the result is still deterministic, which is
 // enough when creating a simple stat of reject hosts.
 import { SHARED_DESCRIPTION } from './constants/description';
-import { getPhishingDomains } from './lib/get-phishing-domains';
 
 import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
-import { appendArrayInPlace } from './lib/append-array-in-place';
 import { OUTPUT_INTERNAL_DIR, SOURCE_DIR } from './constants/dir';
-import { DomainsetOutput } from './lib/create-file';
+import { DomainsetOutput } from './lib/rules/domainset';
+import { foundDebugDomain } from './lib/parse-filter/shared';
+import { AdGuardHomeOutput } from './lib/rules/domainset';
+import { getPhishingDomains } from './lib/get-phishing-domains';
+import type { MaybePromise } from './lib/misc';
+import { RulesetOutput } from './lib/rules/ruleset';
+import { fetchAssets } from './lib/fetch-assets';
+import { AUGUST_ASN, HUIZE_ASN } from '../Source/ip/badboy_asn';
+
+const readLocalRejectDomainsetPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/reject.conf'));
+const readLocalRejectExtraDomainsetPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/reject_extra.conf'));
+const readLocalRejectRulesetPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'non_ip/reject.conf'));
+const readLocalRejectIpListPromise = readFileIntoProcessedArray(path.resolve(SOURCE_DIR, 'ip/reject.conf'));
+
+const hostsDownloads = HOSTS.map(entry => processHostsWithPreload(...entry));
+const hostsExtraDownloads = HOSTS_EXTRA.map(entry => processHostsWithPreload(...entry));
+const domainListsDownloads = DOMAIN_LISTS.map(entry => processDomainListsWithPreload(...entry));
+const domainListsExtraDownloads = DOMAIN_LISTS_EXTRA.map(entry => processDomainListsWithPreload(...entry));
+const adguardFiltersDownloads = ADGUARD_FILTERS.map(entry => processFilterRulesWithPreload(...entry));
+const adguardFiltersExtraDownloads = ADGUARD_FILTERS_EXTRA.map(entry => processFilterRulesWithPreload(...entry));
+const adguardFiltersWhitelistsDownloads = ADGUARD_FILTERS_WHITELIST.map(entry => processFilterRulesWithPreload(...entry));
 
 export const buildRejectDomainSet = task(require.main === module, __filename)(async (span) => {
   const rejectBaseDescription = [
     ...SHARED_DESCRIPTION,
     '',
-    'The domainset supports AD blocking, tracking protection, privacy protection, anti-phishing, anti-mining',
+    'The domainset supports AD blocking, tracking protection, privacy protection, anti-mining',
     '',
     'Build from:',
     ...HOSTS.map(host => ` - ${host[0]}`),
@@ -31,142 +50,235 @@ export const buildRejectDomainSet = task(require.main === module, __filename)(as
     ...ADGUARD_FILTERS.map(filter => ` - ${Array.isArray(filter) ? filter[0] : filter}`)
   ];
 
-  const rejectOutput = new DomainsetOutput(span, 'reject')
+  const rejectDomainsetOutput = new DomainsetOutput(span, 'reject')
     .withTitle('Sukka\'s Ruleset - Reject Base')
     .withDescription(rejectBaseDescription);
 
-  const rejectExtraOutput = new DomainsetOutput(span, 'reject_extra')
+  const rejectExtraDomainsetOutput = new DomainsetOutput(span, 'reject_extra')
     .withTitle('Sukka\'s Ruleset - Reject Extra')
     .withDescription([
       ...SHARED_DESCRIPTION,
       '',
-      'The domainset supports AD blocking, tracking protection, privacy protection, anti-phishing, anti-mining',
+      'The domainset supports AD blocking, tracking protection, privacy protection, anti-mining',
       '',
       'Build from:',
       ...HOSTS_EXTRA.map(host => ` - ${host[0]}`),
       ...DOMAIN_LISTS_EXTRA.map(domainList => ` - ${domainList[0]}`),
-      ...ADGUARD_FILTERS_EXTRA.map(filter => ` - ${Array.isArray(filter) ? filter[0] : filter}`),
+      ...ADGUARD_FILTERS_EXTRA.map(filter => ` - ${filter[0]}`)
+    ]);
+
+  const rejectPhisingDomainsetOutput = new DomainsetOutput(span, 'reject_phishing')
+    .withTitle('Sukka\'s Ruleset - Reject Phishing')
+    .withDescription([
+      ...SHARED_DESCRIPTION,
+      '',
+      'The domainset is specifically designed for anti-phishing',
+      '',
+      'Build from:',
+      ...PHISHING_HOSTS_EXTRA.map(host => ` - ${host[0]}`),
       ...PHISHING_DOMAIN_LISTS_EXTRA.map(domainList => ` - ${domainList[0]}`)
     ]);
 
-  const appendArrayToRejectOutput = rejectOutput.addFromDomainset.bind(rejectOutput);
-  const appendArrayToRejectExtraOutput = rejectExtraOutput.addFromDomainset.bind(rejectExtraOutput);
+  const rejectNonIpRulesetOutput = new RulesetOutput(span, 'reject', 'non_ip')
+    .withTitle('Sukka\'s Ruleset - Reject Non-IP')
+    .withDescription([
+      ...SHARED_DESCRIPTION,
+      '',
+      'The ruleset supports AD blocking, tracking protection, privacy protection, anti-phishing, anti-mining',
+      '',
+      'The file contains wildcard domains from data source mentioned in /domainset/reject file'
+    ]);
+
+  const rejectIPOutput = new RulesetOutput(span, 'reject', 'ip')
+    .withTitle('Sukka\'s Ruleset - Anti Bogus Domain')
+    .withDescription([
+      ...SHARED_DESCRIPTION,
+      '',
+      'This file contains known addresses that are hijacking NXDOMAIN results returned by DNS servers, and botnet controller IPs.',
+      '',
+      'Data from:',
+      ' - https://github.com/felixonmars/dnsmasq-china-list',
+      ' - https://github.com/curbengh/botnet-filter',
+      ' - And other sources mentioned in /domainset/reject file'
+    ])
+    .bulkAddIPASN(AUGUST_ASN)
+    .bulkAddIPASN(HUIZE_ASN);
+
+  // Dedupe domainSets (no need to await this)
+  // Collect DOMAIN, DOMAIN-SUFFIX, and DOMAIN-KEYWORD from non_ip/reject.conf for deduplication
+  // DOMAIN-WILDCARD is not really useful for deduplication, it is only included in AdGuardHome output
+  // It is faster to add base than add others first then whitelist
+  rejectDomainsetOutput.addFromRuleset(readLocalRejectRulesetPromise);
+  rejectExtraDomainsetOutput.addFromRuleset(readLocalRejectRulesetPromise);
+
+  rejectNonIpRulesetOutput.addFromRuleset(readLocalRejectRulesetPromise);
+
+  rejectDomainsetOutput.addFromDomainset(readLocalRejectDomainsetPromise);
+  rejectExtraDomainsetOutput.addFromDomainset(readLocalRejectDomainsetPromise);
+  rejectPhisingDomainsetOutput.addFromDomainset(readLocalRejectDomainsetPromise);
+
+  rejectExtraDomainsetOutput.addFromDomainset(readLocalRejectExtraDomainsetPromise);
+
+  rejectIPOutput.addFromRuleset(readLocalRejectIpListPromise);
+
+  const appendArrayToRejectOutput = (source: MaybePromise<AsyncIterable<string> | Iterable<string> | string[]>) => rejectDomainsetOutput.addFromDomainset(source);
+  const appendArrayToRejectExtraOutput = (source: MaybePromise<AsyncIterable<string> | Iterable<string> | string[]>) => rejectExtraDomainsetOutput.addFromDomainset(source);
 
   /** Whitelists */
   const filterRuleWhitelistDomainSets = new Set(PREDEFINED_WHITELIST);
+  const filterRuleWhiteKeywords = new Set<string>();
 
   // Parse from AdGuard Filters
-  const shouldStop = await span
+  await span
     .traceChild('download and process hosts / adblock filter rules')
-    .traceAsyncFn(async (childSpan) => {
-      // eslint-disable-next-line sukka/no-single-return -- not single return
-      let shouldStop = false;
-      await Promise.all([
-        // Parse from remote hosts & domain lists
-        HOSTS.map(entry => processHosts(childSpan, ...entry).then(appendArrayToRejectOutput)),
-        HOSTS_EXTRA.map(entry => processHosts(childSpan, ...entry).then(appendArrayToRejectExtraOutput)),
+    .traceAsyncFn((childSpan) => Promise.all([
 
-        DOMAIN_LISTS.map(entry => processDomainLists(childSpan, ...entry).then(appendArrayToRejectOutput)),
-        DOMAIN_LISTS_EXTRA.map(entry => processDomainLists(childSpan, ...entry).then(appendArrayToRejectExtraOutput)),
+      // Parse from remote hosts & domain lists
+      hostsDownloads.map(task => task(childSpan).then(appendArrayToRejectOutput)),
+      hostsExtraDownloads.map(task => task(childSpan).then(appendArrayToRejectExtraOutput)),
 
-        ADGUARD_FILTERS.map(
-          entry => processFilterRules(childSpan, ...entry)
-            .then(({ white, black, foundDebugDomain }) => {
-              if (foundDebugDomain) {
-                // eslint-disable-next-line sukka/no-single-return -- not single return
-                shouldStop = true;
-                // we should not break here, as we want to see full matches from all data source
+      domainListsDownloads.map(task => task(childSpan).then(appendArrayToRejectOutput)),
+      domainListsExtraDownloads.map(task => task(childSpan).then(appendArrayToRejectExtraOutput)),
+
+      rejectPhisingDomainsetOutput.addFromDomainset(getPhishingDomains(childSpan)),
+
+      adguardFiltersDownloads.map(
+        task => task(childSpan).then(({ whiteDomains, whiteDomainSuffixes, blackDomains, blackDomainSuffixes, blackIPs, blackWildcard, whiteKeyword, blackKeyword }) => {
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomains);
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomainSuffixes, suffix => '.' + suffix);
+
+          addArrayElementsToSet(filterRuleWhiteKeywords, whiteKeyword);
+
+          rejectDomainsetOutput.bulkAddDomain(blackDomains);
+          rejectDomainsetOutput.bulkAddDomainSuffix(blackDomainSuffixes);
+
+          rejectDomainsetOutput.bulkAddDomainKeyword(blackKeyword);
+
+          rejectNonIpRulesetOutput.bulkAddDomainWildcard(blackWildcard);
+
+          rejectIPOutput.bulkAddAnyCIDR(blackIPs, false);
+        })
+      ),
+      adguardFiltersExtraDownloads.map(
+        task => task(childSpan).then(({ whiteDomains, whiteDomainSuffixes, blackDomains, blackDomainSuffixes, blackIPs, blackWildcard, whiteKeyword, blackKeyword }) => {
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomains);
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomainSuffixes, suffix => '.' + suffix);
+          addArrayElementsToSet(filterRuleWhiteKeywords, whiteKeyword);
+
+          rejectExtraDomainsetOutput.bulkAddDomain(blackDomains);
+          rejectExtraDomainsetOutput.bulkAddDomainSuffix(blackDomainSuffixes);
+
+          rejectExtraDomainsetOutput.bulkAddDomainKeyword(blackKeyword);
+
+          rejectIPOutput.bulkAddAnyCIDR(blackIPs, false);
+
+          rejectNonIpRulesetOutput.bulkAddDomainWildcard(blackWildcard);
+        })
+      ),
+      adguardFiltersWhitelistsDownloads.map(
+        task => task(childSpan).then(({ whiteDomains, whiteDomainSuffixes, blackDomains, blackDomainSuffixes, whiteKeyword, blackKeyword }) => {
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomains);
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, whiteDomainSuffixes, suffix => '.' + suffix);
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, blackDomains);
+          addArrayElementsToSet(filterRuleWhitelistDomainSets, blackDomainSuffixes, suffix => '.' + suffix);
+          addArrayElementsToSet(filterRuleWhiteKeywords, whiteKeyword);
+          addArrayElementsToSet(filterRuleWhiteKeywords, blackKeyword);
+        })
+      ),
+
+      span.traceChildAsync(
+        'get botnet ips',
+        () => fetchAssets(...BOTNET_FILTER, true, true)
+      ).then(arr => rejectIPOutput.bulkAddAnyCIDR(arr, false)),
+      span.traceChildAsync(
+        'get bogus nxdomain ips',
+        () => fetchAssets(...BOGUS_NXDOMAIN_DNSMASQ, true, false)
+          .then(arr => {
+            for (let i = 0, len = arr.length; i < len; i++) {
+              const line = arr[i];
+              if (line.startsWith('bogus-nxdomain=')) {
+                arr[i] = line.slice(15).trim();
               }
-              addArrayElementsToSet(filterRuleWhitelistDomainSets, white);
-              appendArrayToRejectOutput(black);
-            })
-        ),
-        ADGUARD_FILTERS_EXTRA.map(
-          entry => processFilterRules(childSpan, ...entry)
-            .then(({ white, black, foundDebugDomain }) => {
-              if (foundDebugDomain) {
-                // eslint-disable-next-line sukka/no-single-return -- not single return
-                shouldStop = true;
-                // we should not break here, as we want to see full matches from all data source
-              }
-              addArrayElementsToSet(filterRuleWhitelistDomainSets, white);
-              appendArrayToRejectExtraOutput(black);
-            })
-        ),
-        ADGUARD_FILTERS_WHITELIST.map(entry => processFilterRules(childSpan, ...entry).then(({ white, black }) => {
-          addArrayElementsToSet(filterRuleWhitelistDomainSets, white);
-          addArrayElementsToSet(filterRuleWhitelistDomainSets, black);
-        })),
-        getPhishingDomains(childSpan).then(appendArrayToRejectExtraOutput),
-        readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/reject_sukka.conf')).then(appendArrayToRejectOutput),
-        // Dedupe domainSets
-        // span.traceChildAsync('collect black keywords/suffixes', async () =>
-        /**
-         * Collect DOMAIN, DOMAIN-SUFFIX, and DOMAIN-KEYWORD from non_ip/reject.conf for deduplication
-         * DOMAIN-WILDCARD is not really useful for deduplication, it is only included in AdGuardHome output
-        */
-        rejectOutput.addFromRuleset(readFileByLine(path.resolve(__dirname, '../Source/non_ip/reject.conf')))
-      ].flat());
-      // eslint-disable-next-line sukka/no-single-return -- not single return
-      return shouldStop;
-    });
+            }
 
-  if (shouldStop) {
+            return arr;
+          })
+        // bogus nxdomain needs to be blocked even after resolved
+      ).then(arr => rejectIPOutput.bulkAddAnyCIDR(arr, false))
+    ].flat()));
+
+  if (foundDebugDomain.value) {
+    // eslint-disable-next-line sukka/unicorn/no-process-exit -- cli App
     process.exit(1);
   }
 
   await Promise.all([
-    rejectOutput.done(),
-    rejectExtraOutput.done()
+    rejectDomainsetOutput.done(),
+    rejectExtraDomainsetOutput.done(),
+    rejectPhisingDomainsetOutput.done(),
+    rejectIPOutput.done(),
+    rejectNonIpRulesetOutput.done()
   ]);
 
   // whitelist
   span.traceChildSync('whitelist', () => {
     for (const domain of filterRuleWhitelistDomainSets) {
-      rejectOutput.whitelistDomain(domain);
-      rejectExtraOutput.whitelistDomain(domain);
+      rejectDomainsetOutput.whitelistDomain(domain);
+      rejectExtraDomainsetOutput.whitelistDomain(domain);
+      rejectPhisingDomainsetOutput.whitelistDomain(domain);
+
+      // DON'T Whitelist reject non_ip ruleset, we are force blocking thingshere
+      // rejectNonIpRulesetOutput.whitelistDomain(domain);
     }
 
-    for (let i = 0, len = rejectOutput.$preprocessed.length; i < len; i++) {
-      rejectExtraOutput.whitelistDomain(rejectOutput.$preprocessed[i]);
+    // we use "whitelistKeyword" method, this will be used to create kwfilter internally
+    for (const keyword of filterRuleWhiteKeywords) {
+      rejectDomainsetOutput.whitelistKeyword(keyword);
+      rejectExtraDomainsetOutput.whitelistKeyword(keyword);
+      rejectPhisingDomainsetOutput.whitelistKeyword(keyword);
+      rejectNonIpRulesetOutput.whitelistKeyword(keyword);
     }
+
+    rejectDomainsetOutput.domainTrie.dump(arg => {
+      rejectExtraDomainsetOutput.whitelistDomain(arg);
+      rejectPhisingDomainsetOutput.whitelistDomain(arg);
+
+      // e.g. .data.microsort.com can strip waston*.event.data.microsort.com
+      rejectNonIpRulesetOutput.wildcardTrie.whitelist(arg);
+    });
   });
 
-  // Create reject stats
-  const rejectDomainsStats: string[] = span
-    .traceChild('create reject stats')
-    .traceSyncFn(() => {
-      const results = [];
-      results.push('=== base ===');
-      appendArrayInPlace(results, rejectOutput.getStatMap());
-      results.push('=== extra ===');
-      appendArrayInPlace(results, rejectExtraOutput.getStatMap());
-      return results;
-    });
-
-  return Promise.all([
-    rejectOutput.write(),
-    rejectExtraOutput.write(),
-    compareAndWriteFile(
-      span,
-      rejectDomainsStats,
-      path.join(OUTPUT_INTERNAL_DIR, 'reject-stats.txt')
-    ),
-    compareAndWriteFile(
-      span,
-      appendArrayInPlace(
-        [
-          '! Title: Sukka\'s Ruleset - Blocklist for AdGuardHome',
-          '! Last modified: ' + new Date().toUTCString(),
-          '! Expires: 6 hours',
-          '! License: https://github.com/SukkaW/Surge/blob/master/LICENSE',
-          '! Homepage: https://github.com/SukkaW/Surge',
-          '! Description: The domainset supports AD blocking, tracking protection, privacy protection, anti-phishing, anti-mining',
-          '!'
-        ],
-        rejectOutput.adguardhome(/* filterRuleWhitelistDomainSets */)
-      ),
-      path.join(OUTPUT_INTERNAL_DIR, 'reject-adguardhome.txt')
-    )
+  await Promise.all([
+    rejectDomainsetOutput.write(),
+    rejectExtraDomainsetOutput.write(),
+    rejectPhisingDomainsetOutput.write(),
+    rejectIPOutput.write(),
+    rejectNonIpRulesetOutput.write()
   ]);
+
+  // we are going to re-use rejectOutput's domainTrie and mutate it
+  // so we must wait until we write rejectOutput to disk after we can mutate its trie
+  const rejectOutputAdGuardHome = new AdGuardHomeOutput(span, 'reject-adguardhome', OUTPUT_INTERNAL_DIR)
+    .withTitle('Sukka\'s Ruleset - AdGuardHome Blocklist')
+    .withDescription([
+      'The AdGuardHome ruleset supports AD blocking, tracking protection, privacy protection, anti-mining'
+    ]);
+
+  rejectOutputAdGuardHome.domainTrie = rejectDomainsetOutput.domainTrie;
+
+  await rejectOutputAdGuardHome
+    // .addFromRuleset(readLocalMyRejectRulesetPromise)
+    .addFromRuleset(readLocalRejectRulesetPromise)
+    .addFromRuleset(readFileIntoProcessedArray(path.join(SOURCE_DIR, 'non_ip/reject-drop.conf')))
+    .addFromRuleset(readFileIntoProcessedArray(path.join(SOURCE_DIR, 'non_ip/reject-no-drop.conf')))
+    .addFromDomainset(readLocalRejectExtraDomainsetPromise)
+    .write();
+
+  const myRejectOutputAdGuardHome = new AdGuardHomeOutput(span, 'my-reject-adguardhome', OUTPUT_INTERNAL_DIR)
+    .withTitle('Sukka\'s Ruleset - AdGuardHome Blocklist for Myself (Sukka)')
+    .withDescription([]);
+
+  await myRejectOutputAdGuardHome
+    .addFromRuleset(readFileIntoProcessedArray(path.join(SOURCE_DIR, 'non_ip/my_reject.conf')))
+    .write();
 });

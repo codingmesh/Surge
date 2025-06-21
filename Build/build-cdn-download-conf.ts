@@ -3,12 +3,13 @@ import { fetchRemoteTextByLine, readFileIntoProcessedArray } from './lib/fetch-t
 import { HostnameTrie } from './lib/trie';
 import { task } from './trace';
 import { SHARED_DESCRIPTION } from './constants/description';
-import { appendArrayInPlace } from './lib/append-array-in-place';
+import { appendArrayInPlace } from 'foxts/append-array-in-place';
 import { SOURCE_DIR } from './constants/dir';
-import { DomainsetOutput } from './lib/create-file';
+import { DomainsetOutput } from './lib/rules/domainset';
 import { CRASHLYTICS_WHITELIST } from './constants/reject-data-source';
+import { appendSetElementsToArray } from 'foxts/append-set-elements-to-array';
 
-const getS3OSSDomainsPromise = (async (): Promise<string[]> => {
+const getS3OSSDomainsPromise = (async (): Promise<Set<string>> => {
   const trie = new HostnameTrie();
 
   for await (const line of await fetchRemoteTextByLine('https://publicsuffix.org/list/public_suffix_list.dat', true)) {
@@ -31,7 +32,7 @@ const getS3OSSDomainsPromise = (async (): Promise<string[]> => {
   trie.find('.scw.cloud').forEach((line: string) => {
     if (
       (line.startsWith('s3-') || line.startsWith('s3.'))
-      && !line.includes('cn-')
+      // && !line.includes('cn-')
     ) {
       S3OSSDomains.add('.' + line);
     }
@@ -44,25 +45,28 @@ const getS3OSSDomainsPromise = (async (): Promise<string[]> => {
     }
   });
 
-  return Array.from(S3OSSDomains);
+  return S3OSSDomains;
 })();
+
+const cdnDomainsListPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/cdn.conf'));
+const downloadDomainSetPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/download.conf'));
+const steamDomainSetPromise = readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/game-download.conf'));
 
 export const buildCdnDownloadConf = task(require.main === module, __filename)(async (span) => {
   const [
     S3OSSDomains,
-
     cdnDomainsList,
     downloadDomainSet,
     steamDomainSet
   ] = await Promise.all([
-    getS3OSSDomainsPromise,
-    readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/cdn.conf')),
-    readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/download.conf')),
-    readFileIntoProcessedArray(path.join(SOURCE_DIR, 'domainset/game-download.conf'))
+    span.traceChildPromise('download public suffix list for s3', getS3OSSDomainsPromise),
+    cdnDomainsListPromise,
+    downloadDomainSetPromise,
+    steamDomainSetPromise
   ]);
 
   // Move S3 domains to download domain set, since S3 files may be large
-  appendArrayInPlace(downloadDomainSet, S3OSSDomains);
+  appendSetElementsToArray(downloadDomainSet, S3OSSDomains);
   appendArrayInPlace(downloadDomainSet, steamDomainSet);
 
   // we have whitelisted the crashlytics domain, and we also want to put it in CDN policy
