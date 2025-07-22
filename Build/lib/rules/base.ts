@@ -2,12 +2,14 @@ import type { Span } from '../../trace';
 import { HostnameSmolTrie } from '../trie';
 import { not, nullthrow } from 'foxts/guard';
 import { fastIpVersion } from 'foxts/fast-ip-version';
+import { addArrayElementsToSet } from 'foxts/add-array-elements-to-set';
 import type { MaybePromise } from '../misc';
 import type { BaseWriteStrategy } from '../writing-strategy/base';
 import { merge as mergeCidr } from 'fast-cidr-tools';
 import { createRetrieKeywordFilter as createKeywordFilter } from 'foxts/retrie';
 import path from 'node:path';
 import { SurgeMitmSgmodule } from '../writing-strategy/surge';
+import { appendArrayInPlace } from 'foxts/append-array-in-place';
 
 /**
  * Holds the universal rule data (domain, ip, url-regex, etc. etc.)
@@ -15,6 +17,8 @@ import { SurgeMitmSgmodule } from '../writing-strategy/surge';
  */
 export class FileOutput {
   protected strategies: BaseWriteStrategy[] = [];
+
+  protected dataSource = new Set<string>();
 
   public domainTrie = new HostnameSmolTrie(null);
   public wildcardTrie: HostnameSmolTrie = new HostnameSmolTrie(null);
@@ -77,9 +81,24 @@ export class FileOutput {
     this.strategies.push(strategy);
   }
 
-  protected description: string[] | readonly string[] | null = null;
+  protected description: string[] | null = null;
   withDescription(description: string[] | readonly string[]) {
-    this.description = description;
+    this.description = description as string[];
+    return this;
+  }
+
+  appendDescription(description: string | string[], ...rest: string[]) {
+    this.description ??= [];
+    if (typeof description === 'string') {
+      this.description.push(description);
+    } else {
+      appendArrayInPlace(this.description, description);
+    }
+
+    if (rest.length) {
+      appendArrayInPlace(this.description, rest);
+    }
+
     return this;
   }
 
@@ -314,6 +333,19 @@ export class FileOutput {
     return this;
   }
 
+  /**
+   * Add data source information. This will be rendered inside description
+   */
+  appendDataSource(source: string | string[]) {
+    if (typeof source === 'string') {
+      this.dataSource.add(source);
+    } else {
+      addArrayElementsToSet(this.dataSource, source);
+    }
+
+    return this;
+  }
+
   async done() {
     await this.pendingPromise;
     this.pendingPromise = null;
@@ -503,15 +535,26 @@ export class FileOutput {
       return childSpan.traceChildAsync('output to disk', (childSpan) => {
         const promises: Array<Promise<void> | void> = [];
 
+        const descriptions = nullthrow(this.description, 'Missing description');
+
+        if (this.dataSource.size) {
+          descriptions.push(
+            '',
+            'This file contains data from:'
+          );
+          appendArrayInPlace(descriptions, Array.from(this.dataSource).sort().map((source) => `  - ${source}`));
+        }
+
         for (let i = 0, len = this.strategies.length; i < len; i++) {
           const strategy = this.strategies[i];
 
           const basename = (strategy.overwriteFilename || this.id) + '.' + strategy.fileExtension;
+
           promises.push(
             childSpan.traceChildAsync('write ' + strategy.name, (childSpan) => Promise.resolve(strategy.output(
               childSpan,
               nullthrow(this.title, 'Missing title'),
-              nullthrow(this.description, 'Missing description'),
+              descriptions,
               this.date,
               path.join(
                 strategy.outputDir,
