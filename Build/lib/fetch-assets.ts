@@ -2,58 +2,221 @@ import picocolors from 'picocolors';
 import { $$fetch, defaultRequestInit, ResponseError } from './fetch-retry';
 import { waitWithAbort } from 'foxts/wait';
 import { nullthrow } from 'foxts/guard';
-import { TextLineStream } from 'foxts/text-line-stream';
-import { ProcessLineStream } from './process-line';
-import { AdGuardFilterIgnoreUnsupportedLinesStream } from './parse-filter/filters';
+import { ignoreAdGuardUnsupportedLine } from './parse-filter/filters';
+import { splitTextIntoLines } from './fetch-text-by-line';
 import { appendArrayInPlace } from 'foxts/append-array-in-place';
 
-// eslint-disable-next-line sukka/unicorn/custom-error-definition -- typescript is better
-class CustomAbortError extends Error {
-  public readonly name = 'AbortError';
-  public readonly digest = 'AbortError';
+import { newQueue } from '@henrygd/queue';
+import { AbortError, isAbortErrorLike } from 'foxts/abort-error';
+import { downloadTimestamp, recordExternalDownloadAttempt } from './download-stats';
+import type { ExternalDownloadOutcome } from './download-stats';
+
+const reusedCustomAbortError = new AbortError();
+const textDecoder = new TextDecoder();
+
+const queue = newQueue(18);
+
+const MIN_HEDGE_DELAY = 3000;
+const HEDGE_DELAY_STEP = 1200;
+const HEDGE_SPEED_SAMPLE_INTERVAL = 1000;
+const HEDGE_QUEUE_POLL_INTERVAL = 250;
+// This threshold is evaluated against encoded response bytes, before fetch()
+// decompresses them. 1 MiB/s is about 8.4 Mbps on the network, so a source
+// throttled to 5 Mbps will be hedged, while a larger compressed response making
+// healthy progress will not be raced merely because decoding expands its body.
+const MIN_ACCEPTABLE_DOWNLOAD_BYTES_PER_SECOND = 1024 * 1024;
+
+export function isDownloadThroughputSlow(bytesReceived: number, elapsed: number) {
+  return bytesReceived / elapsed * 1000 < MIN_ACCEPTABLE_DOWNLOAD_BYTES_PER_SECOND;
 }
 
-const reusedCustomAbortError = new CustomAbortError();
+interface PrimaryDownloadProgress {
+  headersReceived: boolean,
+  bodyConsumptionStartedAt: number | null,
+  encodedBytesAtConsumptionStart: number,
+  encodedBytesReceived: number,
+  encodedBodyComplete: boolean,
+  failed: boolean
+}
 
 export async function fetchAssets(
   url: string, fallbackUrls: null | undefined | string[] | readonly string[],
   processLine = false, allowEmpty = false, filterAdGuardUnsupportedLines = false
 ) {
   const controller = new AbortController();
+  const primaryProgress: PrimaryDownloadProgress = {
+    headersReceived: false,
+    bodyConsumptionStartedAt: null,
+    encodedBytesAtConsumptionStart: 0,
+    encodedBytesReceived: 0,
+    encodedBodyComplete: false,
+    failed: false
+  };
+
+  const waitForSlowPrimary = async (fallbackIndex: number) => {
+    await waitWithAbort(MIN_HEDGE_DELAY + fallbackIndex * HEDGE_DELAY_STEP, controller.signal);
+
+    let sampledAt: number | null = null;
+    let sampledBytes = 0;
+
+    while (!controller.signal.aborted) {
+      // No response headers after the initial delay, or an explicit primary
+      // failure, is sufficient reason to begin the fallback immediately.
+      if (!primaryProgress.headersReceived || primaryProgress.failed) {
+        return;
+      }
+
+      if (primaryProgress.bodyConsumptionStartedAt == null) {
+        // The response is waiting for our local body-consumption queue. This is
+        // not an upstream slowdown and should not trigger a duplicate request.
+        // eslint-disable-next-line no-await-in-loop -- poll until local consumption starts
+        await waitWithAbort(HEDGE_QUEUE_POLL_INTERVAL, controller.signal);
+        continue;
+      }
+
+      if (primaryProgress.encodedBodyComplete) {
+        // The full encoded body is already local. Any remaining time belongs
+        // to decompression or parsing, which a fallback can not improve.
+        // eslint-disable-next-line no-await-in-loop -- wait for local processing to finish
+        await waitWithAbort(HEDGE_QUEUE_POLL_INTERVAL, controller.signal);
+        continue;
+      }
+
+      if (sampledAt == null) {
+        sampledAt = primaryProgress.bodyConsumptionStartedAt;
+        sampledBytes = primaryProgress.encodedBytesAtConsumptionStart;
+      }
+      const now = performance.now();
+      const sampleDuration = now - sampledAt;
+
+      if (sampleDuration < HEDGE_SPEED_SAMPLE_INTERVAL) {
+        // eslint-disable-next-line no-await-in-loop -- collect a complete throughput sample
+        await waitWithAbort(HEDGE_SPEED_SAMPLE_INTERVAL - sampleDuration, controller.signal);
+        continue;
+      }
+
+      if (isDownloadThroughputSlow(primaryProgress.encodedBytesReceived - sampledBytes, sampleDuration)) {
+        return;
+      }
+
+      sampledAt = now;
+      sampledBytes = primaryProgress.encodedBytesReceived;
+      // eslint-disable-next-line no-await-in-loop -- periodically re-sample a healthy transfer
+      await waitWithAbort(HEDGE_SPEED_SAMPLE_INTERVAL, controller.signal);
+    }
+
+    throw reusedCustomAbortError;
+  };
 
   const createFetchFallbackPromise = async (url: string, index: number) => {
     if (index >= 0) {
-      // To avoid wasting bandwidth, we will wait for a few time before downloading from the fallback URL.
       try {
-        await waitWithAbort(200 + (index + 1) * 400, controller.signal);
+        await waitForSlowPrimary(index);
       } catch {
-        console.log(picocolors.gray('[fetch cancelled early]'), picocolors.gray(url));
         throw reusedCustomAbortError;
       }
     }
+
     if (controller.signal.aborted) {
-      console.log(picocolors.gray('[fetch cancelled]'), picocolors.gray(url));
       throw reusedCustomAbortError;
     }
-    const res = await $$fetch(url, { signal: controller.signal, ...defaultRequestInit });
-
-    let stream = nullthrow(res.body, url + ' has an empty body')
-      .pipeThrough(new TextDecoderStream())
-      .pipeThrough(new TextLineStream({ skipEmptyLines: processLine }));
-    if (processLine) {
-      stream = stream.pipeThrough(new ProcessLineStream());
-    }
-    if (filterAdGuardUnsupportedLines) {
-      stream = stream.pipeThrough(new AdGuardFilterIgnoreUnsupportedLinesStream());
-    }
-    const arr = await Array.fromAsync(stream);
-
-    if (arr.length < 1 && !allowEmpty) {
-      throw new ResponseError(res, url, 'empty response w/o 304');
+    if (index >= 0) {
+      console.log(picocolors.yellowBright('[fetch fallback begin]'), picocolors.gray(url));
     }
 
-    controller.abort();
-    return arr;
+    const isPrimary = index < 0;
+    const attemptStartedAt = downloadTimestamp();
+    let headersAt: number | null = null;
+    let decodedBodyStartedAt: number | null = null;
+    let encodedBodyStartedAt: number | null = null;
+    let encodedBodyEndedAt: number | null = null;
+    let decodedBytes = 0;
+    let encodedBytes = 0;
+    let contentEncoding: string | null = null;
+    let finalized = false;
+
+    const finalizeAttempt = (outcome: ExternalDownloadOutcome) => {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      recordExternalDownloadAttempt({
+        url,
+        kind: isPrimary ? 'primary' : 'fallback',
+        outcome,
+        startedAt: attemptStartedAt,
+        headersAt,
+        decodedBodyStartedAt,
+        encodedBodyStartedAt,
+        encodedBodyEndedAt,
+        endedAt: downloadTimestamp(),
+        decodedBytes,
+        encodedBytes,
+        contentEncoding
+      });
+    };
+
+    try {
+      // We intentionally acquire the body-consumption queue after receiving
+      // headers. Request scheduling will be handled separately.
+      const res = await $$fetch(url, { signal: controller.signal, ...defaultRequestInit }, {
+        onResponseStart(encoding) {
+          headersAt = downloadTimestamp();
+          contentEncoding = encoding;
+          if (isPrimary) {
+            primaryProgress.headersReceived = true;
+          }
+        },
+        onEncodedBodyChunk(bytes) {
+          encodedBodyStartedAt ??= downloadTimestamp();
+          encodedBytes += bytes;
+          if (isPrimary) {
+            primaryProgress.encodedBytesReceived += bytes;
+          }
+        },
+        onEncodedBodyEnd(completed) {
+          encodedBodyEndedAt = downloadTimestamp();
+          if (isPrimary) {
+            primaryProgress.encodedBodyComplete = completed;
+          }
+        }
+      });
+      headersAt ??= downloadTimestamp();
+
+      nullthrow(res.body, url + ' has an empty body');
+      if (isPrimary) {
+        primaryProgress.headersReceived = true;
+      }
+
+      const arr = await queue.add(async () => {
+        decodedBodyStartedAt = downloadTimestamp();
+        if (isPrimary) {
+          primaryProgress.bodyConsumptionStartedAt = performance.now();
+          primaryProgress.encodedBytesAtConsumptionStart = primaryProgress.encodedBytesReceived;
+        }
+        const buf = await res.arrayBuffer();
+        decodedBytes = buf.byteLength;
+        return splitTextIntoLines(
+          textDecoder.decode(buf),
+          processLine,
+          filterAdGuardUnsupportedLines ? ignoreAdGuardUnsupportedLine : null
+        );
+      });
+
+      if (!allowEmpty && arr.length < 1) {
+        throw new ResponseError(res, url, 'empty response w/o 304');
+      }
+
+      finalizeAttempt('winner');
+      controller.abort();
+      return arr;
+    } catch (error) {
+      if (isPrimary) {
+        primaryProgress.failed = true;
+      }
+      finalizeAttempt(isAbortErrorLike(error) ? 'aborted' : 'failed');
+      throw error;
+    }
   };
 
   const primaryPromise = createFetchFallbackPromise(url, -1);

@@ -6,7 +6,7 @@ export interface DNSMapping {
   realip: boolean,
   /** should convert to ruleset */
   ruleset: boolean,
-  dns: string,
+  dns: string | null,
   /**
    * domain[0]
    *
@@ -22,7 +22,7 @@ export const DIRECTS = {
     dns: 'system',
     hosts: {},
     realip: false,
-    ruleset: false,
+    ruleset: true,
     domains: [
       'securelogin.com.cn',
       '$captive.apple.com',
@@ -37,7 +37,7 @@ export const DIRECTS = {
     domains: [
       '+m2m',
       // '+ts.net', // TailScale Magic DNS
-      // AdGuard
+      // AdGuard -- needs to be real ip otherwise AdGuard App will not recognize it, mustn't be fake ip
       '$injections.adguard.org',
       '$local.adguard.org',
       // Auto Discovery
@@ -47,13 +47,25 @@ export const DIRECTS = {
 } as const satisfies Record<string, DNSMapping>;
 
 export const LAN = {
-  ROUTER: {
+  // By default, all hostnames with the suffix '.local' will be resolved by the system.
+  // Some app like OrbStack uses mDNS and this TLD (orb.local) via mDNS.
+  // Surge already handles .local with mDNS properly, we should not map to server:system
+  LOCAL_SPECIAL: {
+    dns: null, // disable DNS server for now. In the future we might wannna explicitly specify `server: force-syslib`
+    hosts: {},
+    realip: true,
+    ruleset: false,
+    domains: [
+      '+local'
+    ]
+  },
+  LAN_WITHOUT_REAL_IP: {
     dns: 'system',
     hosts: {},
     realip: false,
     ruleset: true,
     domains: [
-      '+home',
+      // Common Router
       // 'zte.home', // ZTE CPE
       // 'airbox.home',
       // 'bthub.home',
@@ -101,17 +113,10 @@ export const LAN = {
       '$mobile.hotspot', // T-Mobile Hotspot
       '$ntt.setup',
       '$pi.hole',
-      '+plex.direct'
+      '+plex.direct',
       // 'web.setup'
-    ]
-  },
-  LAN_WITHOUT_REAL_IP: {
-    dns: 'system',
-    hosts: {},
-    realip: false,
-    ruleset: true,
-    domains: [
       // AS112
+      '+home',
       '10.in-addr.arpa',
       '16.172.in-addr.arpa',
       '17.172.in-addr.arpa',
@@ -136,14 +141,15 @@ export const LAN = {
   },
   LAN_WITH_REALIP: {
     dns: 'system',
-    hosts: {
-      // localhost: ['127.0.0.1']
-    },
+    hosts: {},
     realip: true,
     ruleset: true,
     domains: [
       '+lan',
-      '+local',
+      // By default, all hostnames with the suffix '.local' will be resolved by the system.
+      // Some app like OrbStack uses mDNS and this TLD (orb.local) via mDNS.
+      // Surge already handles .local with mDNS properly, we should not map to server:system
+      // '+local',
       '+internal',
       // 'amplifi.lan',
       // '$localhost',
@@ -156,12 +162,12 @@ export const LAN = {
 export const HOSTS = {
   HOSTS: {
     // not actually used, only for a placeholder
-    dns: 'quic://dns.alidns.com:853',
+    dns: '',
     hosts: {
-      'cdn.jsdelivr.net': ['cdn.jsdelivr.net.cdn.cloudflare.net']
+      'cdn.jsdelivr.net': ['testingcf.jsdelivr.net']
     },
     realip: false,
     ruleset: false,
-    domains: []
+    domains: [] as never[]
   }
 } as const satisfies Record<string, DNSMapping>;

@@ -1,47 +1,95 @@
-import { asyncWriteToStream } from 'foxts/async-write-to-stream';
 import { fastStringArrayJoin } from 'foxts/fast-string-array-join';
 import fs from 'node:fs';
+import path from 'node:path';
 import picocolors from 'picocolors';
+import { SpanCategory } from '../trace';
 import type { Span } from '../trace';
 import { readFileByLine } from './fetch-text-by-line';
 import { writeFile } from './misc';
 import { createCompareSource, fileEqualWithCommentComparator } from 'foxts/compare-source';
+import { extractContentHashFromFile } from './content-hash';
 
-export const fileEqual = createCompareSource(fileEqualWithCommentComparator);
+const fileEqual = createCompareSource(fileEqualWithCommentComparator);
 
-export async function compareAndWriteFile(span: Span, linesA: string[], filePath: string) {
+/**
+ * The comparison half shared by {@link compareAndWriteFile} and
+ * {@link compareAndWriteFileInWorker} -- there is exactly one implementation of
+ * "is the previous output already up to date", regardless of how the new content
+ * ends up being written.
+ */
+async function isPreviousOutputEqual(span: Span, linesA: string[], filePath: string, contentHash: string | null) {
+  // readFileByLine will not include last empty line. So we always pop the linesA for comparison purpose
+  if (linesA.length > 0 && linesA.at(-1) === '') {
+    linesA.pop();
+  }
+
   const isEqual = await span.traceChildAsync(`compare ${filePath}`, async () => {
-    if (fs.existsSync(filePath)) {
-      return fileEqual(linesA, readFileByLine(filePath));
+    if (!fs.existsSync(filePath)) {
+      console.log(`${filePath} does not exists, writing...`);
+      return false;
     }
 
-    console.log(`${filePath} does not exists, writing...`);
-    return false;
-  });
+    if (contentHash) {
+      const previousHash = await extractContentHashFromFile(filePath);
+      if (previousHash) {
+        return previousHash === contentHash;
+      }
+      // previous output predates the content hash marker, fall through to full comparison
+    }
+
+    return fileEqual(linesA, readFileByLine(filePath));
+  }, SpanCategory.FsRead);
 
   if (isEqual) {
     console.log(picocolors.gray(picocolors.dim(`same content, bail out writing: ${filePath}`)));
+  }
+
+  return isEqual;
+}
+
+/**
+ * To keep metadata comment `last updated` not change if real content is the same,
+ * we only write when the actual content differs, and the new `last updated` will
+ * be written along with new content.
+ *
+ * When `contentHash` is provided (and the previous output already embeds a
+ * content hash marker), the comparison only reads the first chunk of the
+ * previous file. Otherwise it falls back to a full comment-insensitive
+ * line-by-line comparison.
+ */
+export async function compareAndWriteFile(span: Span, linesA: string[], filePath: string, contentHash: string | null = null) {
+  if (await isPreviousOutputEqual(span, linesA, filePath, contentHash)) {
     return;
   }
 
-  return span.traceChildAsync<void>(`writing ${filePath}`, async () => {
-    const linesALen = linesA.length;
+  return writeFileLines(span, linesA, filePath);
+}
 
-    // The default highwater mark is normally 16384,
-    // So we make sure direct write to file if the content is
-    // most likely less than 500 lines
-    if (linesALen < 500) {
-      return writeFile(filePath, fastStringArrayJoin(linesA, '\n') + '\n');
-    }
+/**
+ * Same comparison as {@link compareAndWriteFile}, but the write itself is
+ * synchronous. For worker threads only: blocking a dedicated worker is free,
+ * whereas an async write hands the completion back through libuv to an event
+ * loop we would rather not depend on being idle.
+ */
+export async function compareAndWriteFileInWorker(span: Span, linesA: string[], filePath: string, contentHash: string | null = null) {
+  if (await isPreviousOutputEqual(span, linesA, filePath, contentHash)) {
+    return;
+  }
 
-    const writeStream = fs.createWriteStream(filePath);
-    for (let i = 0; i < linesALen; i++) {
-      const p = asyncWriteToStream(writeStream, linesA[i] + '\n');
-      // eslint-disable-next-line no-await-in-loop -- stream high water mark
-      if (p) await p;
-    }
+  writeFileLinesSync(span, linesA, filePath);
+}
 
-    writeStream.end();
-    writeStream.close();
-  });
+export function writeFileLines(span: Span, linesA: string[], filePath: string): Promise<void> {
+  return span.traceChildAsync<void>(
+    `writing ${filePath}`,
+    () => writeFile(filePath, fastStringArrayJoin(linesA, '\n') + '\n'),
+    SpanCategory.FsWrite
+  );
+}
+
+export function writeFileLinesSync(span: Span, linesA: string[], filePath: string): void {
+  span.traceChildSync(`writing ${filePath}`, () => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, fastStringArrayJoin(linesA, '\n') + '\n');
+  }, SpanCategory.FsWrite);
 }

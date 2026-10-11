@@ -1,6 +1,7 @@
+import { isCI } from 'ci-info';
 import type { Span } from '../../trace';
-import { compareAndWriteFile } from '../create-file';
-import { compareAndWriteFileInWorker } from '../create-file.worker';
+import { calculateContentHash } from '../content-hash';
+import { compareAndWriteFile, compareAndWriteFileInWorker, writeFileLines, writeFileLinesSync } from '../create-file';
 
 /**
  * The class is not about holding rule data, instead it determines how the
@@ -27,6 +28,14 @@ export abstract class BaseWriteStrategy {
 
   protected abstract result: string[] | null;
 
+  /**
+   * Whether the output has no volatile metadata (e.g. "Last Updated") to preserve,
+   * so on CI the previous file can simply be overwritten without comparison (the
+   * comparison would only serve to reduce SSD wear, which CI doesn't care about).
+   * Only enable this when withPadding emits neither a banner nor any date.
+   */
+  protected readonly skipCompareOnCI: boolean = false;
+
   abstract writeDomain(domain: string): void;
   abstract writeDomainSuffix(domain: string): void;
   abstract writeDomainKeywords(keyword: Set<string>): void;
@@ -45,28 +54,7 @@ export abstract class BaseWriteStrategy {
   abstract writeProtocols(protocol: Set<string>): void;
   abstract writeOtherRules(rule: string[]): void;
 
-  protected abstract withPadding(title: string, description: string[] | readonly string[], date: Date, content: string[]): string[];
-
-  static readonly domainWildCardToRegex = (domain: string) => {
-    let result = '^';
-    for (let i = 0, len = domain.length; i < len; i++) {
-      switch (domain[i]) {
-        case '.':
-          result += String.raw`\.`;
-          break;
-        case '*':
-          result += String.raw`[\w.-]*?`;
-          break;
-        case '?':
-          result += String.raw`[\w.-]`;
-          break;
-        default:
-          result += domain[i];
-      }
-    }
-    result += '$';
-    return result;
-  };
+  protected abstract withPadding(title: string, description: string[] | readonly string[], date: Date, content: string[], contentHash: string | null): string[];
 
   public output(
     span: Span,
@@ -75,33 +63,81 @@ export abstract class BaseWriteStrategy {
     date: Date,
     filePath: string
   ): void | Promise<void> {
-    if (!this.result) {
+    const result = this.result;
+    if (!result) {
       return;
     }
 
-    if (this.result.length > 3000) {
-      return compareAndWriteFileInWorker(
+    // Without volatile metadata to preserve, the compare-before-write only serves
+    // to reduce SSD wear -- irrelevant on CI, so skip hashing and comparison alike.
+    if (isCI && this.skipCompareOnCI) {
+      return writeFileLines(
         span,
-        this.withPadding(
-          title,
-          description,
-          date,
-          this.result
-        ),
+        this.withPadding(title, description, date, result, null),
         filePath
       );
     }
+
+    // The hash covers the real content (title, description and rules) but not the
+    // volatile date, so compareAndWriteFile can bail out by only reading the head
+    // of the previous output. Strategies whose withPadding doesn't embed the marker
+    // (e.g. JSON output) simply fall back to the full comparison.
+    const contentHash = calculateContentHash(title, description, result);
+
     return compareAndWriteFile(
       span,
       this.withPadding(
         title,
         description,
         date,
-        this.result
+        result,
+        contentHash
       ),
-      filePath
+      filePath,
+      contentHash
     );
   };
+
+  /**
+   * Worker-thread twin of {@link output}: identical comparison, but the write is
+   * synchronous since blocking a dedicated worker costs nothing.
+   */
+  public async outputInWorker(
+    span: Span,
+    title: string,
+    description: string[] | readonly string[],
+    date: Date,
+    filePath: string
+  ): Promise<void> {
+    const result = this.result;
+    if (!result) {
+      return;
+    }
+
+    if (isCI && this.skipCompareOnCI) {
+      writeFileLinesSync(
+        span,
+        this.withPadding(title, description, date, result, null),
+        filePath
+      );
+      return;
+    }
+
+    const contentHash = calculateContentHash(title, description, result);
+
+    await compareAndWriteFileInWorker(
+      span,
+      this.withPadding(
+        title,
+        description,
+        date,
+        result,
+        contentHash
+      ),
+      filePath,
+      contentHash
+    );
+  }
 
   public get content() {
     return this.result;

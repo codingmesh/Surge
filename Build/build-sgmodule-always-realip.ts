@@ -4,6 +4,7 @@ import { compareAndWriteFile } from './lib/create-file';
 import { DIRECTS, LAN } from '../Source/non_ip/direct';
 import type { DNSMapping } from '../Source/non_ip/direct';
 import { DOMESTICS, DOH_BOOTSTRAP } from '../Source/non_ip/domestic';
+import { DOMESTIC_CDN } from '../Source/non_ip/domestic_cdn';
 import * as yaml from 'yaml';
 import { OUTPUT_INTERNAL_DIR, OUTPUT_MODULES_DIR } from './constants/dir';
 import { appendArrayInPlace } from 'foxts/append-array-in-place';
@@ -27,6 +28,15 @@ const HOSTNAMES = [
   '*.stun.twilio.com',
   'stun.syncthing.net',
   'stun.*',
+  // Steam LAN Cache
+  //
+  // Steam will DNS lookup this domain, trying to find Local LAN Cache server
+  // If one is found, Steam client will try to connect with this IP with original CDN domain in
+  // HTTP Host header, while in HTTP plain HTTP/1.1. It is up to the HTTP server to handle this.
+  //
+  // By having lancache.steamcontent.com in Real IP, we can avoid Steam client accidentally mistaking
+  // the Fake IP as a local LAN cache. This also helps real LAN cache to work properly.
+  'lancache.steamcontent.com'
   // 'controlplane.tailscale.com',
   // NTP
   // 'time.*.com', 'time.*.gov', 'time.*.edu.cn', 'time.*.apple.com', 'time?.*.com', 'ntp.*.com', 'ntp?.*.com', '*.time.edu.cn', '*.ntp.org.cn', '*.pool.ntp.org'
@@ -35,9 +45,7 @@ const HOSTNAMES = [
   // 'localhost.*.qq.com'
   // 'localhost.ptlogin2.qq.com
   // 'localhost.sec.qq.com',
-  // 'localhost.work.weixin.qq.com',
-  '*.sslip.io',
-  '*.nip.io'
+  // 'localhost.work.weixin.qq.com'
 ];
 
 export const buildAlwaysRealIPModule = task(require.main === module, __filename)(async (span) => {
@@ -54,7 +62,7 @@ export const buildAlwaysRealIPModule = task(require.main === module, __filename)
     ]);
 
   // Intranet, Router Setup, and mant more
-  const dataset = [DIRECTS, LAN, DOMESTICS, DOH_BOOTSTRAP].reduce<DNSMapping[]>((acc, item) => {
+  const dataset = [DIRECTS, LAN, DOMESTICS, DOMESTIC_CDN, DOH_BOOTSTRAP].reduce<DNSMapping[]>((acc, item) => {
     Object.values(item).forEach((i: DNSMapping) => {
       if (i.realip) {
         acc.push(i);
@@ -66,7 +74,8 @@ export const buildAlwaysRealIPModule = task(require.main === module, __filename)
 
   const getDnsMappingRuleWithoutWildcard = createGetDnsMappingRule(false);
 
-  for (const { domains } of dataset) {
+  for (let i = 0, len = dataset.length; i < len; i++) {
+    const { domains } = dataset[i];
     clashFakeIpFilter.addFromRuleset(domains.flatMap(getDnsMappingRuleWithoutWildcard));
   }
 
@@ -89,7 +98,16 @@ export const buildAlwaysRealIPModule = task(require.main === module, __filename)
           dns: {
             'fake-ip-filter': appendArrayInPlace(
               /** clash */
-              dataset.flatMap(({ domains }) => domains.map((domain) => `+.${domain}`)),
+              dataset.flatMap(({ domains }) => domains.map((domain) => {
+                switch (domain[0]) {
+                  case '$':
+                    return domain.slice(1);
+                  case '+':
+                    return '+.' + domain.slice(1);
+                  default:
+                    return domain;
+                }
+              })),
               HOSTNAMES
             )
           }

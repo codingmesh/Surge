@@ -1,381 +1,93 @@
-import DNS2 from 'dns2';
-import asyncRetry from 'async-retry';
-import picocolors from 'picocolors';
-import { looseTldtsOpt } from '../constants/loose-tldts-opt';
-import { createKeyedAsyncMutex } from './keyed-async-mutex';
-import tldts from 'tldts-experimental';
-import * as whoiser from 'whoiser';
-import process from 'node:process';
-import { createRetrieKeywordFilter as createKeywordFilter } from 'foxts/retrie';
-import { shuffleArray } from 'foxts/shuffle-array';
+import { createDomainAliveChecker, createRegisterableDomainAliveChecker } from 'domain-alive';
+import { $$fetch, fetchAgent, fetchForDoH } from './fetch-retry';
 
-const domainAliveMap = new Map<string, boolean>();
-
-class DnsError extends Error {
-  name = 'DnsError';
-  constructor(readonly message: string, public readonly server: string) {
-    super(message);
-  }
-}
-
-interface DnsResponse extends DNS2.$DnsResponse {
-  dns: string
-}
-
-const dohServers: Array<[string, DNS2.DnsResolver]> = ([
-  '8.8.8.8',
-  '8.8.4.4',
-  '1.0.0.1',
-  '1.1.1.1',
-  '162.159.36.1',
-  '162.159.46.1',
-  'dns.cloudflare.com', // Cloudflare DoH that uses different IPs
+const dnsServers = [
+  'https://8.8.8.8/dns-query', 'https://8.8.4.4/dns-query',
+  'https://1.0.0.1/dns-query', 'https://1.1.1.1/dns-query',
+  'https://162.159.36.1/dns-query', 'https://162.159.46.1/dns-query',
+  'https://dns.cloudflare.com/dns-query', // Cloudflare DoH that uses different IPs: 172.64.41.8,162.159.61.8
+  'https://cloudflare-dns.com/dns-query', // Cloudflare DoH that uses different IPs: 104.16.249.249,104.16.248.249
+  'https://mozilla.cloudflare-dns.com/dns-query', // Cloudflare DoH that uses different IPs: 162.159.61.4,172.64.41.4
   // one.one.one.one // Cloudflare DoH that uses 1.1.1.1 and 1.0.0.1
-  '101.101.101.101', // TWNIC
-  '185.222.222.222', // DNS.SB
-  '45.11.45.11', // DNS.SB
-  'doh.dns.sb', // DNS.SB, Different PoPs w/ GeoDNS
-  // 'doh.sb', // DNS.SB xTom Anycast IP
-  // 'dns.sb', // DNS.SB use same xTom Anycast IP as doh.sb
-  'dns10.quad9.net', // Quad9 unfiltered
-  'doh.sandbox.opendns.com', // OpenDNS sandbox (unfiltered)
-  'unfiltered.adguard-dns.com',
-  // '0ms.dev', // Proxy Cloudflare
-  // '76.76.2.0', // ControlD unfiltered, path not /dns-query
-  // '76.76.10.0', // ControlD unfiltered, path not /dns-query
-  // 'dns.bebasid.com', // BebasID, path not /dns-query but /unfiltered
-  // '193.110.81.0', // dns0.eu
-  // '185.253.5.0', // dns0.eu
-  // 'zero.dns0.eu',
-  'dns.nextdns.io',
-  'anycast.dns.nextdns.io',
-  'wikimedia-dns.org',
-  'puredns.org',
-  // 'ordns.he.net',
-  // 'dns.mullvad.net',
-  'basic.rethinkdns.com'
-  // '198.54.117.10' // NameCheap DNS, supports DoT, DoH, UDP53
-  // 'ada.openbld.net',
-  // 'dns.rabbitdns.org'
-] as const).map(dns => [
-  dns,
-  DNS2.DOHClient({
-    dns,
-    http: false
-  })
-] as const);
+  // 'https://101.101.101.101/dns-query', 'https://dns.twnic.tw/dns-query' // TWNIC, has DNS pollution, e.g. t66y.com
+  // 'https://dns.hinet.net/dns-query' // HiNet DoH, has DNS pollution, e.g. t66y.com
+  'https://185.222.222.222/dns-query', 'https://45.11.45.11/dns-query', // DNS.SB
+  // 'https://doh.dns.sb/dns-query', // DNS.SB, Unicast PoPs w/ GeoDNS
+  'https://us-chi.doh.sb/dns-query', // DNS.SB Chicago PoP
+  'https://us-nyc.doh.sb/dns-query', // DNS.SB New York City PoP
+  'https://us-sjc.doh.sb/dns-query', // DNS.SB San Jose PoP
+  // 'https://doh.sb/dns-query', // DNS.SB xTom Anycast IP
+  // 'https://dns.sb/dns-query', // DNS.SB use same xTom Anycast IP as doh.sb
+  // 'https://dns10.quad9.net/dns-query', // Quad9 unfiltered
+  // 'https://9.9.9.10/dns-query', 'https://149.112.112.10/dns-query', // Quad9 unfiltered Error: Cannot decode name (bad label)
 
-const domesticDohServers: Array<[string, DNS2.DnsResolver]> = ([
-  '223.5.5.5',
-  '223.6.6.6',
-  '120.53.53.53',
-  '1.12.12.12'
-] as const).map(dns => [
-  dns,
-  DNS2.DOHClient({
-    dns,
-    http: false
-  })
-] as const);
+  // OpenDNS sandbox (unfiltered), doesn't support HTTP/2 properly
+  // Error: Session closed without receiving a SETTINGS frame
+  //
+  // verified with curl:
+  // curl: (16) Error in the HTTP2 framing layer
+  'https://doh.sandbox.opendns.com/dns-query',
 
-const domainAliveMutex = createKeyedAsyncMutex('isDomainAlive');
+  'https://unfiltered.adguard-dns.com/dns-query', // AdGuard unfiltered
+  // 'https://v.recipes/dns-query', // Proxy Cloudflare, too many HTTP 503
+  'https://v.recipes/dns/dns.google/dns-query', // Proxy Google, claims to not limited by Google 1500 QPS limit
+  'https://freedns.controld.com/p0', // ControlD unfiltered
+  // 'https://dns.bebasid.com/unfiltered', // BebasID, cause loads of RangeError: Attempt to access memory outside buffer bounds, possibly caused by timeout
+  // 'https://193.110.81.0/dns-query', // dns0.eu
+  // 'https://185.253.5.0/dns-query', // dns0.eu
+  // 'https://zero.dns0.eu/dns-query',
+  'https://dns.nextdns.io/dns-query',
+  'https://anycast.dns.nextdns.io/dns-query',
+  'https://wikimedia-dns.org/dns-query',
+  // 'https://ordns.he.net/dns-query',
+  // 'https://dns.mullvad.net/dns-query', empty HTTP body a lot
+  'https://basic.rethinkdns.com/dns-query',
+  'https://dns.surfsharkdns.com/dns-query',
+  // 'https://private.canadianshield.cira.ca/dns-query', // Error: Cannot decode name (bad label)
+  // 'https://unfiltered.joindns4.eu/dns-query', // too many ECONNRESET on GitHub Actions
+  'https://public.dns.iij.jp/dns-query',
+  // 'https://common.dot.dns.yandex.net/dns-query', // too many ECONNRESET on GitHub Actions
+  'https://safeservedns.com/dns-query' // NameCheap DNS, supports DoT, DoH, UDP53
+  // 'https://ada.openbld.net/dns-query', Contains filtering
+  // 'https://dns.rabbitdns.org/dns-query' -- TO MANY HTTP 522
+];
 
-export async function isDomainAlive(
-  domain: string,
-  // we dont need to check domain[0] here, this is only from runAgainstSourceFile
-  isIncludeAllSubdomain: boolean
-): Promise<boolean> {
-  if (domainAliveMap.has(domain)) {
-    return domainAliveMap.get(domain)!;
-  }
-  const apexDomain = tldts.getDomain(domain, looseTldtsOpt);
-  if (!apexDomain) {
-    // console.log(picocolors.gray('[domain invalid]'), picocolors.gray('no apex domain'), { domain });
-    domainAliveMap.set('.' + domain, true);
-    return true;
-  }
+const resultCache = new Map();
+const registerableDomainResultCache = new Map();
 
-  const apexDomainAlive = await isApexDomainAlive(apexDomain);
-  if (isIncludeAllSubdomain || domain.length > apexDomain.length) {
-    return apexDomainAlive;
-  }
-  if (!apexDomainAlive) {
-    return false;
-  }
-
-  return domainAliveMutex.acquire(domain, async () => {
-    domain = domain[0] === '.' ? domain.slice(1) : domain;
-
-    const aDns: string[] = [];
-    const aaaaDns: string[] = [];
-
-    // test 2 times before make sure record is empty
-    const servers = shuffleArray(dohServers, { copy: true });
-
-    for (let i = 0, len = servers.length; i < len; i++) {
-      try {
-        // eslint-disable-next-line no-await-in-loop -- sequential
-        const aRecords = (await $resolve(domain, 'A', servers[i]));
-        if (aRecords.answers.length > 0) {
-          domainAliveMap.set(domain, true);
-          return true;
-        }
-
-        aDns.push(aRecords.dns);
-      } catch {}
-
-      if (aDns.length >= 2) {
-        break; // we only need to test 2 times
-      }
+export function createDomainAliveMethods(customWhoisServersMapping: Record<string, string>) {
+  const isRegisterableDomainAlive = createRegisterableDomainAliveChecker({
+    dns: {
+      dnsServers,
+      maxAttempts: 6,
+      customFetchForDoH: fetchForDoH,
+      customAgentForDoH: fetchAgent
+    },
+    registerableDomainResultCache,
+    whois: {
+      customWhoisServersMapping
     }
-
-    for (let i = 0, len = servers.length; i < len; i++) {
-      try {
-        // eslint-disable-next-line no-await-in-loop -- sequential
-        const aaaaRecords = await $resolve(domain, 'AAAA', servers[i]);
-        if (aaaaRecords.answers.length > 0) {
-          domainAliveMap.set(domain, true);
-          return true;
-        }
-
-        aaaaDns.push(aaaaRecords.dns);
-      } catch {}
-
-      if (aaaaDns.length >= 2) {
-        break; // we only need to test 2 times
-      }
-    }
-
-    // only then, let's test twice with domesticDohServers
-    const domesticServers = shuffleArray(domesticDohServers, { copy: true });
-    for (let i = 0, len = domesticServers.length; i < len; i++) {
-      try {
-        // eslint-disable-next-line no-await-in-loop -- sequential
-        const aRecords = await $resolve(domain, 'A', domesticServers[i]);
-        if (aRecords.answers.length > 0) {
-          domainAliveMap.set(domain, true);
-          return true;
-        }
-        aDns.push(aRecords.dns);
-      } catch {}
-      if (aDns.length >= 2) {
-        break; // we only need to test 2 times
-      }
-    }
-
-    for (let i = 0, len = domesticServers.length; i < len; i++) {
-      try {
-        // eslint-disable-next-line no-await-in-loop -- sequential
-        const aaaaRecords = await $resolve(domain, 'AAAA', domesticServers[i]);
-        if (aaaaRecords.answers.length > 0) {
-          domainAliveMap.set(domain, true);
-          return true;
-        }
-        aaaaDns.push(aaaaRecords.dns);
-      } catch {}
-
-      if (aaaaDns.length >= 2) {
-        break; // we only need to test 2 times
-      }
-    }
-
-    console.log(picocolors.red('[domain dead]'), 'no A/AAAA records', { domain, a: aDns, aaaa: aaaaDns });
-
-    domainAliveMap.set(domain, false);
-    return false;
   });
-}
 
-const apexDomainMap = createKeyedAsyncMutex('isApexDomainAlive');
-
-function isApexDomainAlive(apexDomain: string) {
-  if (domainAliveMap.has(apexDomain)) {
-    return domainAliveMap.get(apexDomain)!;
-  }
-
-  return apexDomainMap.acquire(apexDomain, async () => {
-    const servers = shuffleArray(dohServers, { copy: true });
-
-    let nsSuccess = 0;
-
-    for (let i = 0, len = servers.length; i < len; i++) {
-      const server = servers[i];
-      try {
-        // eslint-disable-next-line no-await-in-loop -- one by one
-        const resp = await $resolve(apexDomain, 'NS', server);
-        if (resp.answers.length > 0) {
-          domainAliveMap.set(apexDomain, true);
-          return true;
-        }
-
-        nsSuccess++;
-
-        if (nsSuccess >= 2) {
-          // we only need to test 2 times
-          break;
-        }
-      } catch {}
+  const isDomainAlive = createDomainAliveChecker({
+    dns: {
+      dnsServers,
+      maxAttempts: 6,
+      customFetchForDoH: fetchForDoH,
+      customAgentForDoH: fetchAgent
+    },
+    registerableDomainResultCache,
+    resultCache,
+    whois: {
+      customWhoisServersMapping
     }
-
-    let whois;
-    try {
-      whois = await getWhois(apexDomain);
-    } catch (e) {
-      console.log(picocolors.red('[whois error]'), { domain: apexDomain }, e);
-      domainAliveMap.set(apexDomain, true);
-      return true;
-    }
-
-    const whoisError = noWhois(whois);
-    if (!whoisError) {
-      console.log(picocolors.gray('[domain alive]'), picocolors.gray('whois found'), { domain: apexDomain });
-      domainAliveMap.set(apexDomain, true);
-      return true;
-    }
-
-    console.log(picocolors.red('[domain dead]'), 'whois not found', { domain: apexDomain, err: whoisError });
-
-    domainAliveMap.set(apexDomain, false);
-    return false;
   });
+
+  return { isRegisterableDomainAlive, isDomainAlive };
 }
 
-async function $resolve(name: string, type: DNS2.PacketQuestion, server: [string, DNS2.DnsResolver]) {
-  try {
-    return await asyncRetry(async () => {
-      const [dohServer, dohClient] = server;
+export async function getMethods() {
+  const customWhoisServersMapping = await (await ($$fetch('https://cdn.jsdelivr.net/gh/WooMai/whois-servers@master/list.json'))).json() as Record<string, string>;
 
-      try {
-        return {
-          ...await dohClient(name, type),
-          dns: dohServer
-        } satisfies DnsResponse;
-      } catch (e) {
-        // console.error(e);
-        throw new DnsError((e as Error).message, dohServer);
-      }
-    }, { retries: 5 });
-  } catch (e) {
-    console.log('[doh error]', name, type, e);
-    throw e;
-  }
-}
-
-async function getWhois(domain: string) {
-  return asyncRetry(() => whoiser.domain(domain, { raw: true }), { retries: 5 });
-}
-
-// TODO: this is a workaround for https://github.com/LayeredStudio/whoiser/issues/117
-const whoisNotFoundKeywordTest = createKeywordFilter([
-  'no match for',
-  'does not exist',
-  'not found',
-  'no found',
-  'no entries',
-  'no data found',
-  'is available for registration',
-  'currently available for application',
-  'no matching record',
-  'no information available about domain name',
-  'not been registered',
-  'no match!!',
-  'status: available',
-  ' is free',
-  'no object found',
-  'nothing found',
-  'status: free',
-  // 'pendingdelete',
-  ' has been blocked by '
-]);
-// whois server can redirect, so whoiser might/will get info from multiple whois servers
-// some servers (like TLD whois servers) might have cached/outdated results
-// we can only make sure a domain is alive once all response from all whois servers demonstrate so
-function noWhois(whois: whoiser.WhoisSearchResult): null | string {
-  let empty = true;
-
-  for (const key in whois) {
-    if (Object.hasOwn(whois, key)) {
-      empty = false;
-
-      // if (key === 'error') {
-      //   // if (
-      //   //   (typeof whois.error === 'string' && whois.error)
-      //   //   || (Array.isArray(whois.error) && whois.error.length > 0)
-      //   // ) {
-      //   //   console.error(whois);
-      //   //   return true;
-      //   // }
-      //   continue;
-      // }
-
-      // if (key === 'text') {
-      //   if (Array.isArray(whois.text)) {
-      //     for (const value of whois.text) {
-      //       if (whoisNotFoundKeywordTest(value.toLowerCase())) {
-      //         return value;
-      //       }
-      //     }
-      //   }
-      //   continue;
-      // }
-      // if (key === 'Name Server') {
-      //   // if (Array.isArray(whois[key]) && whois[key].length === 0) {
-      //   //   return false;
-      //   // }
-      //   continue;
-      // }
-
-      // if (key === 'Domain Status') {
-      //   if (Array.isArray(whois[key])) {
-      //     for (const status of whois[key]) {
-      //       if (status === 'free' || status === 'AVAILABLE') {
-      //         return key + ': ' + status;
-      //       }
-      //       if (whoisNotFoundKeywordTest(status.toLowerCase())) {
-      //         return key + ': ' + status;
-      //       }
-      //     }
-      //   }
-
-      //   continue;
-      // }
-
-      // if (typeof whois[key] === 'string' && whois[key]) {
-      //   if (whoisNotFoundKeywordTest(whois[key].toLowerCase())) {
-      //     return key + ': ' + whois[key];
-      //   }
-
-      //   continue;
-      // }
-
-      if (key === '__raw' && typeof whois.__raw === 'string') {
-        const lines = whois.__raw.trim().toLowerCase().replaceAll(/[\t ]+/g, ' ').split(/\r?\n/);
-
-        if (process.env.DEBUG) {
-          console.log({ lines });
-        }
-
-        for (const line of lines) {
-          if (whoisNotFoundKeywordTest(line)) {
-            return line;
-          }
-        }
-        continue;
-      }
-
-      if (typeof whois[key] === 'object' && !Array.isArray(whois[key])) {
-        const tmp = noWhois(whois[key]);
-        if (tmp) {
-          return tmp;
-        }
-        continue;
-      }
-    }
-  }
-
-  if (empty) {
-    return 'whois is empty';
-  }
-
-  return null;
-}
+  return createDomainAliveMethods(customWhoisServersMapping);
+};

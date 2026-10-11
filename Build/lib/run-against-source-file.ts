@@ -9,11 +9,18 @@ export default async function runAgainstSourceFile(
   /** Secret keyword collection, only use for special purpose */
   keywordSet?: Set<string> | null
 ) {
+  let l: string | null = '';
   for await (const line of readFileByLine(filePath)) {
-    const l = processLine(line);
+    l = processLine(line);
     if (!l) {
       continue;
     }
+    const otherPoundSign = l.lastIndexOf('#');
+
+    if (otherPoundSign > 0) {
+      l = l.slice(0, otherPoundSign).trimEnd();
+    }
+
     if (type == null) {
       if (l.includes(',')) {
         type = 'ruleset';
@@ -24,7 +31,7 @@ export default async function runAgainstSourceFile(
 
     if (type === 'ruleset') {
       const [ruleType, domain] = l.split(',', 3);
-      switch (ruleType) {
+      switch (ruleType.toUpperCase()) {
         case 'DOMAIN': {
           callback(domain, false);
           break;

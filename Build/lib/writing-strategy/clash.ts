@@ -94,7 +94,7 @@ export class ClashClassicRuleSet extends BaseWriteStrategy {
 
   protected result: string[] = [`DOMAIN,${MARKER_DOMAIN}`];
 
-  constructor(public readonly type: 'ip' | 'non_ip' /* | (string & {}) */, public readonly outputDir = OUTPUT_CLASH_DIR) {
+  constructor(public readonly type: 'ip' | 'non_ip' | (string & {}), public readonly outputDir = OUTPUT_CLASH_DIR) {
     super(outputDir);
   }
 
@@ -113,7 +113,7 @@ export class ClashClassicRuleSet extends BaseWriteStrategy {
   }
 
   writeDomainWildcard(wildcard: string): void {
-    this.result.push(`DOMAIN-REGEX,${ClashClassicRuleSet.domainWildCardToRegex(wildcard)}`);
+    this.result.push(`DOMAIN-WILDCARD,${wildcard}`);
   }
 
   writeUserAgents = noop;
@@ -162,7 +162,6 @@ export class ClashClassicRuleSet extends BaseWriteStrategy {
       }
       if (v === 6) {
         this.result.push(`SRC-IP-CIDR6,${value}/128`);
-        continue;
       }
     }
   }

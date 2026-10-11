@@ -1,4 +1,5 @@
 import picocolors from 'picocolors';
+import { SpanCategory } from '../../trace';
 import type { Span } from '../../trace';
 import { fetchAssets } from '../fetch-assets';
 import { onBlackFound, onWhiteFound } from './shared';
@@ -24,6 +25,21 @@ const enum ParseType {
 
 export { type ParseType };
 
+/** Plain data: safe to hand across a worker thread boundary */
+export type ProcessFilterRulesResult = Record<
+  'whiteDomains'
+  | 'whiteDomainSuffixes'
+  | 'blackDomains'
+  | 'blackDomainSuffixes'
+  | 'blackIPs'
+  | 'blackWildcard'
+  | 'whiteKeyword'
+  | 'blackKeyword',
+  string[]
+> & {
+  filterRulesUrl: string
+};
+
 export function processFilterRulesWithPreload(
   filterRulesUrl: string,
   fallbackUrls?: string[] | null,
@@ -34,22 +50,8 @@ export function processFilterRulesWithPreload(
     true, false, true
   );
 
-  return (span: Span) => span.traceChildAsync<
-    Record<
-      'whiteDomains'
-      | 'whiteDomainSuffixes'
-      | 'blackDomains'
-      | 'blackDomainSuffixes'
-      | 'blackIPs'
-      | 'blackWildcard'
-      | 'whiteKeyword'
-      | 'blackKeyword',
-      string[]
-    > & {
-      filterRulesUrl: string
-    }
-  >(`process filter rules: ${filterRulesUrl}`, async (span) => {
-    const filterRules = await span.traceChildPromise('download', downloadPromise);
+  return (span: Span) => span.traceChildAsync<ProcessFilterRulesResult>(`process filter rules: ${filterRulesUrl}`, async (span) => {
+    const filterRules = await span.traceChildPromise('download', downloadPromise, SpanCategory.Network);
 
     const whiteDomains = new Set<string>();
     const whiteDomainSuffixes = new Set<string>();
@@ -121,7 +123,7 @@ export function processFilterRulesWithPreload(
       }
     };
 
-    span.traceChild('parse adguard filter').traceSyncFn(() => {
+    span.traceChild('parse adguard filter', SpanCategory.Compute).traceSyncFn(() => {
       for (let i = 0, len = filterRules.length; i < len; i++) {
         lineCb(filterRules[i]);
       }
@@ -166,7 +168,7 @@ const kwfilter = createKeywordFilter([
   ']',
   ')',
   ',', // $3p,doc
-  '#',
+  '#', // ##+js
   '%',
   '&',
   // '=', // maybe we want to support some modifier?
@@ -199,61 +201,56 @@ const kwfilter = createKeywordFilter([
 ]);
 
 /**
- * The idea is that, TransformStream works kinda like a filter running on response. If we
- * can filter lines before Array.fromAsync, we can create a smaller array, this saves memory
- * and could improve performance.
+ * Drop filter lines that can never become a Surge/Clash rule (cosmetic, path
+ * rules, rules with browser-only modifiers) as early as possible, so the parser
+ * and the line array only ever see candidates. Returns the trimmed line, or null
+ * to drop it. Runs inline while the downloaded text is split into lines.
  */
-export class AdGuardFilterIgnoreUnsupportedLinesStream extends TransformStream<string, string> {
-  // private __buf = '';
-  constructor() {
-    super({
-      transform(line, controller) {
-        let firstCharCode = line.charCodeAt(0);
-        if (
-          // bail out path-like/cosmetic very early, even before trim
-          firstCharCode === 47 // /
-          || firstCharCode === 35 // #
-          // doesn't include
-          || !line.includes('.') // rule with out dot can not be a domain
-          || kwfilter(line) // filter out some symbols/modifiers
-        ) {
-          return;
-        }
-
-        line = line.trim();
-
-        if (line.length === 0) {
-          return;
-        }
-
-        firstCharCode = line.charCodeAt(0);
-        const lastCharCode = line.charCodeAt(line.length - 1);
-
-        if (
-          firstCharCode === 47 // 47 `/`
-          // ends with
-          // _160-600.
-          // -detect-adblock.
-          // _web-advert.
-          || lastCharCode === 46 // 46 `.`, line.endsWith('.')
-          || lastCharCode === 45 // 45 `-`, line.endsWith('-')
-          || lastCharCode === 95 // 95 `_`, line.endsWith('_')
-        ) {
-          return;
-        }
-
-        if ((line.includes('/') || line.includes(':')) && !line.includes('://')) {
-          return;
-        }
-
-        controller.enqueue(line);
-      }
-    });
+export function ignoreAdGuardUnsupportedLine(line: string): string | null {
+  let firstCharCode = line.charCodeAt(0);
+  if (
+    // bail out path-like/cosmetic very early, even before trim
+    firstCharCode === 47 // /
+    || firstCharCode === 35 // #
+    // doesn't include
+    || !line.includes('.') // rule with out dot can not be a domain
+    || kwfilter(line) // filter out some symbols/modifiers
+  ) {
+    return null;
   }
+
+  line = line.trim();
+
+  if (line.length === 0) {
+    return null;
+  }
+
+  firstCharCode = line.charCodeAt(0);
+  const lastCharCode = line.charCodeAt(line.length - 1);
+
+  if (
+    firstCharCode === 47 // 47 `/`
+    // ends with
+    // _160-600.
+    // -detect-adblock.
+    // _web-advert.
+    || lastCharCode === 46 // 46 `.`, line.endsWith('.')
+    || lastCharCode === 45 // 45 `-`, line.endsWith('-')
+    || lastCharCode === 95 // 95 `_`, line.endsWith('_')
+  ) {
+    return null;
+  }
+
+  if ((line.includes('/') || line.includes(':')) && !line.includes('://')) {
+    // ignore any line that has "/" or ":" but not "://"
+    return null;
+  }
+
+  return line;
 }
 
 export function parse(line: string, result: [string, ParseType], includeThirdParty: boolean): [hostname: string, flag: ParseType] {
-  // We have already done this in AdGuardFilterIgnoreUnsupportedLinesStream
+  // We have already done this in ignoreAdGuardUnsupportedLine
 
   // if (
   //   // doesn't include
@@ -300,14 +297,14 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
     if (
       // filter.isCosmeticFilter() // always false
       // filter.isNetworkFilter() // always true
-      filter.isElemHide()
-      || filter.isGenericHide()
-      || filter.isSpecificHide()
+      // filter.isElemHide() // just isGenericHide() || isSpecificHide()
+      filter.hasDomains()
+      || (!filter.fromHttp() && !filter.fromHttps())
       || filter.isRedirect()
       || filter.isRedirectRule()
-      || filter.hasDomains()
       || filter.isCSP() // must not be csp rule
-      || (!filter.fromHttp() && !filter.fromHttps())
+      || filter.isGenericHide()
+      || filter.isSpecificHide()
     ) {
       // not supported type
       result[1] = ParseType.Null;
@@ -393,13 +390,13 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
    */
 
   let sliceStart = 0;
-  let sliceEnd = 0;
+  let sliceEnd = line.length;
 
   // After NetworkFilter.parse, it means the line can not be parsed by ghostry NetworkFilter
   // We now need to "salvage" the line as much as possible
 
   let white = false;
-  let includeAllSubDomain = false;
+  let includeAllSubdomain = false;
 
   if (
     line.charCodeAt(0) === 64 // 64 `@`
@@ -407,7 +404,7 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
   ) {
     sliceStart += 2;
     white = true;
-    includeAllSubDomain = true;
+    includeAllSubdomain = true;
   }
 
   /**
@@ -422,11 +419,11 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
     case 124: /** | */
       // line.startsWith('@@|') || line.startsWith('|')
       sliceStart += 1;
-      includeAllSubDomain = false;
+      includeAllSubdomain = false;
 
       if (line[sliceStart] === '|') { // line.startsWith('@@||') || line.startsWith('||')
         sliceStart += 1;
-        includeAllSubDomain = true;
+        includeAllSubdomain = true;
       }
 
       break;
@@ -438,7 +435,7 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
        * `.wap.x4399.com^`
        */
       sliceStart += 1;
-      includeAllSubDomain = true;
+      includeAllSubdomain = true;
       break;
     }
 
@@ -455,7 +452,7 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
        * `://say.ac^`
        */
       if (line[sliceStart + 1] === '/' && line[sliceStart + 2] === '/') {
-        includeAllSubDomain = false;
+        includeAllSubdomain = false;
         sliceStart += 3;
       }
       break;
@@ -464,10 +461,10 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
     case 104: { /** h */
       /** |http://x.o2.pl^ */
       if (line.startsWith('http://', sliceStart)) {
-        includeAllSubDomain = false;
+        includeAllSubdomain = false;
         sliceStart += 7;
       } else if (line.startsWith('https://', sliceStart)) {
-        includeAllSubDomain = false;
+        includeAllSubdomain = false;
         sliceStart += 8;
       }
       break;
@@ -479,7 +476,7 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
 
   const indexOfDollar = line.indexOf('$', sliceStart);
   if (indexOfDollar > -1) {
-    sliceEnd = indexOfDollar - line.length;
+    sliceEnd = indexOfDollar;
   }
 
   /*
@@ -505,7 +502,7 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
     white = true;
   }
   if (line.includes('all', indexOfDollar + 1)) {
-    includeAllSubDomain = true;
+    includeAllSubdomain = true;
   }
 
   /**
@@ -533,19 +530,19 @@ export function parse(line: string, result: [string, ParseType], includeThirdPar
     sliceEnd -= 1;
   }
 
-  const sliced = (sliceStart > 0 || sliceEnd < 0) ? line.slice(sliceStart, sliceEnd === 0 ? undefined : sliceEnd) : line;
+  const sliced = line.slice(sliceStart, sliceEnd);
   if (sliced.length === 0 || sliced.includes('/')) {
     result[1] = ParseType.Null;
     return result;
   }
 
-  return onHostname(sliced, white, includeAllSubDomain, line, result);
+  return onHostname(sliced, white, includeAllSubdomain, line, result);
 }
 
 function onHostname(
   input: string,
   white: boolean,
-  isIncludeAllSubDomain: boolean,
+  isIncludeAllSubdomain: boolean,
   rawLine: string,
   result: [string, ParseType]
 ) {
@@ -596,13 +593,19 @@ function onHostname(
 
     if (white) {
       result[0] = hostname;
-      result[1] = isIncludeAllSubDomain ? ParseType.WhiteIncludeSubdomain : ParseType.WhiteAbsolute;
+      result[1] = isIncludeAllSubdomain ? ParseType.WhiteIncludeSubdomain : ParseType.WhiteAbsolute;
       return result;
     }
 
     // we only strip www when it is blacklist
     if (parsed.subdomain) {
-      if (parsed.subdomain === 'www' || parsed.subdomain === 'xml-v4') {
+      if (
+        parsed.subdomain === 'www'
+        || parsed.subdomain === 'xml-v4'
+        || parsed.subdomain === 'xml-eu'
+        || parsed.subdomain === 'xml-eu-v4'
+        // || (parsed.subdomain.length === 4 && parsed.subdomain.startsWith('www'))
+      ) {
         hostname = parsed.domain;
       } else if (parsed.subdomain.startsWith('www.')) {
         hostname = parsed.subdomain.slice(4) + '.' + parsed.domain;
@@ -610,7 +613,7 @@ function onHostname(
     }
 
     result[0] = hostname;
-    result[1] = isIncludeAllSubDomain ? ParseType.BlackIncludeSubdomain : ParseType.BlackAbsolute;
+    result[1] = isIncludeAllSubdomain ? ParseType.BlackIncludeSubdomain : ParseType.BlackAbsolute;
     return result;
   }
 
@@ -631,6 +634,7 @@ function onHostname(
 
     if (
       (char >= 97 && char <= 122) // 97-122 `a-z`
+      // eslint-disable-next-line sukka/unicorn/prefer-simple-condition-first -- dot is less common than char
       || char === 46 // 46 `.`
       || char === 45 // 45 `-`
       || (char >= 48 && char <= 57) // 48-57 `0-9`

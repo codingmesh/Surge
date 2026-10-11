@@ -1,6 +1,7 @@
 import { processLine } from './lib/process-line';
 import { fastNormalizeDomain } from './lib/normalize-domain';
-import { HostnameSmolTrie } from './lib/trie';
+import { HostnameSmolTrie } from 'hntrie/smol';
+import { domainToASCII } from 'node:url';
 import yauzl from 'yauzl-promise';
 import { fetchRemoteTextByLine } from './lib/fetch-text-by-line';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import { $$fetch } from './lib/fetch-retry';
 import runAgainstSourceFile from './lib/run-against-source-file';
 import { nullthrow } from 'foxts/guard';
 import { Buffer } from 'node:buffer';
+import { GLOBAL } from '../Source/non_ip/global';
 
 export async function getTopOneMillionDomains() {
   const { parse: csvParser } = await import('csv-parse');
@@ -17,7 +19,7 @@ export async function getTopOneMillionDomains() {
   const topDomainTrie = new HostnameSmolTrie();
   const csvParse = csvParser({ columns: false, skip_empty_lines: true });
 
-  const topDomainsZipBody = await (await $$fetch('https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip', {
+  const topDomainsZipBody = await (await $$fetch('https://tranco-list.eu/top-1m.csv.zip', {
     headers: {
       accept: '*/*',
       'user-agent': 'curl/8.12.1'
@@ -56,6 +58,8 @@ export async function parseGfwList() {
   const whiteSet = new Set<string>();
   const gfwListTrie = new HostnameSmolTrie();
 
+  let totalGfwSize = 0;
+
   const gfwlistIgnoreLineKwfilter = createKeywordFilter([
     '.*',
     '*',
@@ -66,7 +70,9 @@ export async function parseGfwList() {
   ]);
 
   const text = await (await $$fetch('https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt')).text();
-  for (const l of atob(text).split('\n')) {
+  const lines = atob(text).split('\n');
+  for (let i = 0, len = lines.length; i < len; i++) {
+    const l = lines[i];
     const line = processLine(l);
     if (!line) continue;
 
@@ -89,24 +95,26 @@ export async function parseGfwList() {
       gfwListTrie.add('.' + line.slice(2));
       continue;
     }
-    if (line.startsWith('|')) {
+    if (line[0] === '|') {
       gfwListTrie.add(line.slice(1));
       continue;
     }
-    if (line.startsWith('.')) {
+    if (line[0] === '.') {
       gfwListTrie.add(line);
       continue;
     }
     const d = fastNormalizeDomain(line);
     if (d) {
+      totalGfwSize++;
       gfwListTrie.add(d);
-      continue;
     }
   }
   for await (const l of await fetchRemoteTextByLine('https://raw.githubusercontent.com/Loyalsoldier/cn-blocked-domain/release/domains.txt', true)) {
+    totalGfwSize++;
     gfwListTrie.add(l);
   }
   for await (const l of await fetchRemoteTextByLine('https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt', true)) {
+    totalGfwSize++;
     gfwListTrie.add(l);
   }
 
@@ -115,8 +123,9 @@ export async function parseGfwList() {
   const keywordSet = new Set<string>();
 
   const callback = (domain: string, includeAllSubdomain: boolean) => {
-    gfwListTrie.whitelist(domain, includeAllSubdomain);
-    topDomainTrie.whitelist(domain, includeAllSubdomain);
+    const d = includeAllSubdomain ? '.' + domain : domain;
+    gfwListTrie.whitelist(d);
+    topDomainTrie.whitelist(d);
   };
   await Promise.all([
     runAgainstSourceFile(path.join(SOURCE_DIR, 'non_ip/global.conf'), callback, 'ruleset', keywordSet),
@@ -126,26 +135,42 @@ export async function parseGfwList() {
     runAgainstSourceFile(path.resolve(OUTPUT_SURGE_DIR, 'non_ip/stream.conf'), callback, 'ruleset', keywordSet),
     runAgainstSourceFile(path.resolve(SOURCE_DIR, 'non_ip/ai.conf'), callback, 'ruleset', keywordSet),
     runAgainstSourceFile(path.resolve(SOURCE_DIR, 'non_ip/microsoft.conf'), callback, 'ruleset', keywordSet),
-    runAgainstSourceFile(path.resolve(SOURCE_DIR, 'non_ip/apple_service.conf'), callback, 'ruleset', keywordSet),
+    runAgainstSourceFile(path.resolve(SOURCE_DIR, 'non_ip/apple_services.conf'), callback, 'ruleset', keywordSet),
     runAgainstSourceFile(path.resolve(OUTPUT_SURGE_DIR, 'domainset/reject.conf'), callback, 'domainset'),
     runAgainstSourceFile(path.resolve(OUTPUT_SURGE_DIR, 'domainset/reject_extra.conf'), callback, 'domainset'),
     runAgainstSourceFile(path.resolve(OUTPUT_SURGE_DIR, 'domainset/cdn.conf'), callback, 'domainset')
   ]);
 
-  whiteSet.forEach(domain => gfwListTrie.whitelist(domain, true));
+  Object.values(GLOBAL).forEach(({ domains }) => {
+    domains.forEach(domain => {
+      if (domain[0] === '$') {
+        callback(domain.slice(1), false);
+      } else if (domain[0] === '+') {
+        callback(domain.slice(1), true);
+      } else {
+        callback(domain, true);
+      }
+    });
+  });
+
+  whiteSet.forEach(domain => gfwListTrie.whitelist(domain[0] === '.' ? domain : '.' + domain));
+
+  let dedupedGfwListSize = 0;
+  gfwListTrie.dump(() => { dedupedGfwListSize++; });
 
   const kwfilter = createKeywordFilter([...keywordSet]);
 
   const missingTop10000Gfwed = new Set<string>();
 
-  topDomainTrie.dump((domain) => {
-    if (gfwListTrie.has(domain) && !kwfilter(domain)) {
+  topDomainTrie.dump((rawDomain) => {
+    const domain = domainToASCII(rawDomain);
+    if (domain && gfwListTrie.match(domain) && !kwfilter(domain)) {
       missingTop10000Gfwed.add(domain);
     }
   });
 
-  console.log(missingTop10000Gfwed.size, '');
   console.log(Array.from(missingTop10000Gfwed).join('\n'));
+  console.log({ totalGfwSize, dedupedGfwListSize, missingSize: missingTop10000Gfwed.size });
 
   return [
     whiteSet,
@@ -157,3 +182,5 @@ export async function parseGfwList() {
 if (require.main === module) {
   parseGfwList().catch(console.error);
 }
+
+// python.com waiting-for-sell

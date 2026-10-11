@@ -3,14 +3,13 @@ import type { DNSMapping } from './direct';
 export const DOMESTICS: Record<string, DNSMapping> = {
   ALIBABA: {
     hosts: {},
-    dns: 'quic://dns.alidns.com:853',
+    dns: 'https://dns.alidns.com/dns-query',
     realip: false,
     ruleset: true,
     domains: [
       'uc.cn',
       // 'ucweb.com', // UC International
       'alibaba.com',
-      '+alicdn.com',
       '+ialicdn.com',
       '+myalicdn.com',
       '+alidns.com',
@@ -24,7 +23,6 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       'alipay.cn',
       'alipay.com.cn',
       'alipaydev.com',
-      '+alipayobjects.com',
       'alibaba-inc.com',
       '+alibabausercontent.com',
       '+alibabadns.com',
@@ -48,7 +46,6 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       'mxhichina.com',
       'soku.com',
       'tb.cn',
-      '+tbcdn.cn',
       'taobao.com',
       'taobao.org',
       '+taobaocdn.com',
@@ -93,13 +90,13 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       '+yunos.com',
       '+nlark.com',
       '+yuque.com',
+      'quark.cn',
+
+      '+geovisearth.com', // tiles.geovisearth.com, tiles{1~3}.geovisearth.com
 
       // Bilibili Aliyun CDN
       '$upos-sz-mirrorali.bilivideo.com',
-      '$upos-sz-estgoss.bilivideo.com',
-
-      // AcFun CDN
-      '$ali-safety-video.acfun.cn'
+      '$upos-sz-estgoss.bilivideo.com'
     ]
   },
   TENCENT: {
@@ -130,6 +127,7 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       // 'qqmail.cn', // not owned by QQ, is sold on hichina.com
       '+qqmail.com',
       'qzone.com',
+      'tencent-cloud.cn',
       '+tencent-cloud.net',
       '+tencent-cloud.com', // apex doain resolve to 0.0.0.1 by DNSPod public DNS
       'tencent.com',
@@ -160,9 +158,8 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       '+smtcdns.net',
       'coding.net',
       '+codehub.cn',
-
-      // AcFun QCloud CDN
-      '$tx-safety-video.acfun.cn'
+      'cnb.cool',
+      'webank.com'
     ]
   },
   BILIBILI: {
@@ -182,8 +179,6 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       '+bilivideo.com',
       '+bilivideo.cn',
       '+bilivideo.net',
-      '+hdslb.com',
-      '+biliimg.com',
       '+biliapi.com',
       '+biliapi.net',
       // 'biligame.cn', // not owned by bilibili, was put on sale by ename
@@ -205,6 +200,7 @@ export const DOMESTICS: Record<string, DNSMapping> = {
     domains: [
       'mi.com',
       'duokan.com',
+      'miwifi.com',
       '+mi-img.com',
       '+mi-idc.com',
       '+xiaoaisound.com', // only subdomains
@@ -218,7 +214,8 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       'xiaomi.net',
       'xiaomiev.com',
       'xiaomiyoupin.com',
-      'gorouter.info'
+      'gorouter.info',
+      'mipay.com'
     ]
   },
   BYTEDANCE: {
@@ -250,6 +247,7 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       'zjurl.cn',
       'okr.com',
       'douyin.com',
+      'douyinpay.com',
       '+douyinpic.com',
       '+douyinstatic.com',
       '+douyincdn.com',
@@ -277,6 +275,9 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       '+byteimg.com', // Uses alidns.com NS
       '+byteacctimg.com', // Uses alidns.com NS
       '+byteeffecttos.com', // Use hichina.com NS
+      '+bytescm.com', // Use alidns.com NS
+      '+bytetos.com', // Use alidns.com NS
+      '+bdurl.net', // Uses alidns.com NS
       '+ibytedapm.com', // China NS
       'oceanengine.com',
       '+edge-byted.com',
@@ -335,6 +336,7 @@ export const DOMESTICS: Record<string, DNSMapping> = {
 
       // Bilibili Baidu CDN
       '$upos-sz-mirrorbd.bilivideo.com',
+      '$upos-sz-mirrorbdb.bilivideo.com',
       '$upos-sz-mirrorbos.bilivideo.com'
     ]
   },
@@ -344,18 +346,6 @@ export const DOMESTICS: Record<string, DNSMapping> = {
     realip: false,
     ruleset: true,
     domains: [
-      '+qhimg.com',
-      '+qhimgs.com',
-      '+qhimgs?.com',
-      // '+qhimgs0.com',
-      // '+qhimgs1.com',
-      // '+qhimgs2.com',
-      // '+qhimgs3.com',
-      // '+qhimgs4.com',
-      // '+qhimgs5.com',
-      // '+qhimgs6.com',
-      '+qhres.com',
-      '+qhres2.com',
       '+qhmsg.com',
       '+qhstatic.com',
       '+qhupdate.com',
@@ -375,7 +365,8 @@ export const DOMESTICS: Record<string, DNSMapping> = {
       'yunpan.com.cn',
       '+qh-cdn.com',
       'baomitu.com',
-      'qiku.com'
+      'qiku.com',
+      '360simg.com'
     ]
   }
 };
@@ -400,16 +391,16 @@ export const DOH_BOOTSTRAP: Record<string, DNSMapping> = {
   DNSPOD: {
     hosts: {
       // 'dot.pub': ['120.53.53.53', '1.12.12.12'],
-      'doh.pub': ['120.53.53.53', '1.12.12.12']
+      // 'doh.pub': ['120.53.53.53', '1.12.12.12']
       // 'dns.pub': ['120.53.53.53', '1.12.12.12']
     },
     realip: false,
     ruleset: false,
-    dns: 'https://1.12.12.12/dns-query',
+    dns: '119.29.29.29',
     domains: [
-      // '$dot.pub',
-      '$doh.pub'
-      // '$dns.pub'
+      '$dot.pub',
+      '$doh.pub',
+      '$dns.pub'
     ]
   },
   QIHOO360: {
@@ -444,9 +435,9 @@ export const DOH_BOOTSTRAP: Record<string, DNSMapping> = {
 
 export const AdGuardHomeDNSMapping = {
   system: ['udp://10.10.1.1:53'],
-  'https://doh.pub/dns-query': ['tls://1.12.12.12', 'tls://120.53.53.53', 'https://1.12.12.12/dns-query', 'https://120.53.53.53/dns-query'],
-  'quic://dns.alidns.com:853': ['quic://223.5.5.5', 'quic://223.6.6.6', 'h3://223.5.5.5/dns-query', 'h3://223.6.6.6/dns-query'],
-  'https://doh.360.cn/dns-query': ['https://doh.360.cn/dns-query', 'tls://dot.360.cn'],
+  'https://doh.pub/dns-query': ['https://doh.pub/dns-query'],
+  'https://dns.alidns.com/dns-query': ['https://dns.alidns.com/dns-query'],
+  'https://doh.360.cn/dns-query': ['https://doh.360.cn/dns-query'],
   '180.76.76.76': ['udp://180.76.76.76'],
   '180.184.2.2': ['udp://180.184.2.2', 'udp://180.184.1.1']
 };

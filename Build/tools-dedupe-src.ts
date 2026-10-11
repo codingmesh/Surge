@@ -4,7 +4,9 @@ import fsp from 'node:fs/promises';
 import { SOURCE_DIR } from './constants/dir';
 import { readFileByLine } from './lib/fetch-text-by-line';
 import { processLine } from './lib/process-line';
-import { HostnameSmolTrie } from './lib/trie';
+import { HostnameSmolTrie } from 'hntrie/smol';
+import { SpanCategory, task } from './trace';
+import { fastStringArrayJoin } from 'foxts/fast-string-array-join';
 
 const ENFORCED_WHITELIST = [
   'hola.sk',
@@ -17,13 +19,14 @@ const ENFORCED_WHITELIST = [
   'twemoji.maxcdn.com',
   'samsungcloudsolution.com',
   'samsungcloudsolution.net',
-  'samsungqbe.com'
+  'samsungqbe.com',
+  'vocadb-analytics.fly.dev'
 ];
 
-const WHITELIST: string[] = ['.lightspeedmining.com', 'samsungqbe.com', '.zbeos.com', '.holashop.org', '.jdie.pl', '.sponsor.printondemandagency.com', '.bmcm.pw', '.vplay.life', '.hola.hk', '.peopleland.net', '.120bit.com', '.tekyboycrypto.xyz', '.rocketpool.pro', '.cryptoloot.pro', '.weminerpool.site', '.timg135.top', '.binance.associates', '.lafermedumineur.fr', '.goldencoin.online', '.hola.sk', '.hola.com.sg', '.acashtech.com', '.bitoreum.org', '.mixpools.org', '.decapool.net', '.taichicoin.org', '.luxxeeu.com'];
+const DEDUPE_LIST: string[] = ['adx-static.ksosoft.com', 'dns.iqiyi.com', 'domain.expiring-soon.xyz', 'img.catwvod.xyz', 'img.vim-cn.com', 's3-zen.mds.yandex.net'];
 
-(async () => {
-  const files = await new Fdir()
+task(require.main === module, __filename)(async (span) => {
+  const files = await span.traceChild('crawl thru all files', SpanCategory.FsRead).traceAsyncFn(() => new Fdir()
     .withFullPaths()
     .filter((filepath, isDirectory) => {
       if (isDirectory) return true;
@@ -33,55 +36,74 @@ const WHITELIST: string[] = ['.lightspeedmining.com', 'samsungqbe.com', '.zbeos.
       return extname !== '.js' && extname !== '.ts';
     })
     .crawl(SOURCE_DIR)
-    .withPromise();
+    .withPromise());
 
-  const whiteTrie = new HostnameSmolTrie(WHITELIST);
-  ENFORCED_WHITELIST.forEach((item) => whiteTrie.whitelist(item));
-  const whitelist = whiteTrie.dump();
+  const whiteTrie = span.traceChild('build whitelist trie', SpanCategory.Compute).traceSyncFn(() => {
+    const trie = new HostnameSmolTrie(DEDUPE_LIST);
+    ENFORCED_WHITELIST.forEach((item) => trie.whitelist(item));
+    return trie;
+  });
 
-  await Promise.all(files.map(file => dedupeFile(file, whitelist)));
-})();
+  await Promise.all(files.map(file => span.traceChildAsync('dedupe ' + file, () => dedupeFile(file, whiteTrie))));
+});
 
-async function dedupeFile(file: string, whitelist: string[]) {
-  const set = new Set<string>();
+function trieHasEntry(trie: HostnameSmolTrie, line: string): boolean {
+  if (line[0] === '.') return trie.hasSubdomain(line.slice(1));
+  return trie.has(line) || trie.hasSubdomain(line);
+}
+
+function trieContains(trie: HostnameSmolTrie, line: string): boolean {
+  return trie.match(line);
+}
+
+async function dedupeFile(file: string, whitelist: HostnameSmolTrie) {
   const result: string[] = [];
 
+  const trie = new HostnameSmolTrie();
+
+  let line: string | null = '';
+
+  let trieCheck = trieHasEntry;
+
   for await (const l of readFileByLine(file)) {
-    const line = processLine(l);
+    line = processLine(l);
+
     if (!line) {
       if (l.startsWith('# $ skip_dedupe_src')) {
         return;
       }
+      if (l.startsWith('# $ dedupe_use_trie_contains')) {
+        trieCheck = trieContains;
+      }
 
-      result.push(l);
+      result.push(l); // keep all comments and blank lines
       continue;
     }
 
-    if (set.has(line)) {
-      continue;
+    if (trieCheck(trie, line)) {
+      continue; // drop duplicate
     }
 
-    // We can't use a trie here since we need to keep the order
-    if (whitelist.some((whiteItem) => isDomainSuffix(whiteItem, line))) {
-      continue;
+    if (trieHasEntry(whitelist, line)) {
+      continue; // drop whitelisted items
     }
 
-    set.add(line);
+    trie.add(line);
     result.push(line);
   }
 
-  return fsp.writeFile(file, result.join('\n') + '\n');
+  return fsp.writeFile(file, fastStringArrayJoin(result, '\n') + '\n');
 }
 
-function isDomainSuffix(whiteItem: string, incomingItem: string) {
-  const whiteIncludeDomain = whiteItem[0] === '.';
-  whiteItem = whiteItem[0] === '.' ? whiteItem.slice(1) : whiteItem;
+// function isDomainSuffix(whiteItem: string, incomingItem: string) {
+//   const whiteIncludeDomain = whiteItem[0] === '.';
+//   whiteItem = whiteItem[0] === '.' ? whiteItem.slice(1) : whiteItem;
 
-  if (whiteItem === incomingItem) {
-    return true; // as long as exact match, we don't care if subdomain is included or not
-  }
-  if (whiteIncludeDomain) {
-    return incomingItem.endsWith('.' + whiteItem);
-  }
-  return false;
-}
+//   if (whiteItem === incomingItem) {
+//     return true; // as long as exact match, we don't care if subdomain is included or not
+//   }
+//   if (whiteIncludeDomain) {
+//     return incomingItem.endsWith('.' + whiteItem);
+//   }
+//   return false;
+// }

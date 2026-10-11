@@ -6,26 +6,6 @@ import { appendArrayInPlace } from 'foxts/append-array-in-place';
 
 export type MaybePromise<T> = T | Promise<T>;
 
-export function fastStringCompare(a: string, b: string) {
-  const lenA = a.length;
-  const lenB = b.length;
-  const minLen = lenA < lenB ? lenA : lenB;
-
-  for (let i = 0; i < minLen; ++i) {
-    const ca = a.charCodeAt(i);
-    const cb = b.charCodeAt(i);
-
-    if (ca > cb) return 1;
-    if (ca < cb) return -1;
-  }
-
-  if (lenA === lenB) {
-    return 0;
-  }
-
-  return lenA > lenB ? 1 : -1;
-};
-
 interface Write {
   (
     destination: string,
@@ -50,7 +30,7 @@ export const writeFile: Write = async (destination: string, input, dir = dirname
   return fsp.writeFile(destination, input, { encoding: 'utf-8' });
 };
 
-export function withBannerArray(title: string, description: string[] | readonly string[], date: Date, content: string[]) {
+export function withBannerArray(title: string, description: string[] | readonly string[], date: Date, content: string[], contentHash: string | null = null) {
   const result: string[] = [
     '#########################################',
     `# ${title}`,
@@ -60,11 +40,15 @@ export function withBannerArray(title: string, description: string[] | readonly 
 
   appendArrayInPlace(result, description.map(line => (line ? `# ${line}` : '#')));
 
+  if (contentHash) {
+    result.push('#', `# ${contentHash}`);
+  }
+
   result.push('#########################################');
 
   appendArrayInPlace(result, content);
 
-  result.push('################## EOF ##################', '');
+  result.push('################## EOF ##################');
 
   return result;
 };

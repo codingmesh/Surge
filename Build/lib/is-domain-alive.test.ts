@@ -1,16 +1,20 @@
 import { describe, it } from 'mocha';
+import { expect } from 'earl';
+import { DOMAIN_ALIVE_REASON_MESSAGES, DOMAIN_ALIVE_REASONS } from 'domain-alive';
+import { createDomainAliveMethods } from './is-domain-alive';
 
-import { isDomainAlive } from './is-domain-alive';
-import { expect } from 'expect';
+describe('domain-alive integration', () => {
+  it('constructs the checkers with the custom DoH agent', async () => {
+    const { isDomainAlive, isRegisterableDomainAlive } = createDomainAliveMethods({});
+    const [domainResult, registerableDomainResult] = await Promise.all([
+      isDomainAlive(''),
+      isRegisterableDomainAlive('')
+    ]);
 
-describe('isDomainAlive', function () {
-  this.timeout(10000);
-
-  it('samsungcloudsolution.net', async () => {
-    expect((await isDomainAlive('samsungcloudsolution.net', true))).toEqual(false);
-  });
-
-  it('ecdasoin.it', async () => {
-    expect((await isDomainAlive('.ecdasoin.it', true))).toEqual(false);
+    expect(domainResult.reason).toEqual(DOMAIN_ALIVE_REASONS.INVALID_DOMAIN);
+    expect(registerableDomainResult.reason).toEqual(DOMAIN_ALIVE_REASONS.INVALID_DOMAIN);
+    expect(DOMAIN_ALIVE_REASON_MESSAGES[domainResult.reason]).toEqual(
+      'No registerable domain could be extracted.'
+    );
   });
 });

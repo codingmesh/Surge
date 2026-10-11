@@ -2,16 +2,18 @@ import path from 'node:path';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 
-import { task } from './trace';
+import { SpanCategory, task } from './trace';
 import { treeDir, TreeFileType } from './lib/tree-dir';
 import type { TreeType, TreeTypeArray } from './lib/tree-dir';
 
-import { OUTPUT_MOCK_DIR, OUTPUT_MODULES_RULES_DIR, PUBLIC_DIR, ROOT_DIR } from './constants/dir';
-import { fastStringCompare, writeFile } from './lib/misc';
+import { OUTPUT_MOCK_DIR, OUTPUT_MODULES_DIR, PUBLIC_DIR, ROOT_DIR } from './constants/dir';
+import { writeFile } from './lib/misc';
+import { fastStringCompare } from 'foxts/fast-string-compare';
 import type { VoidOrVoidArray } from './lib/misc';
 import picocolors from 'picocolors';
 import { tagged as html } from 'foxts/tagged';
 import { compareAndWriteFile } from './lib/create-file';
+import { appendArrayInPlace } from 'foxts/append-array-in-place';
 
 const priorityOrder: Record<'default' | string & {}, number> = {
   LICENSE: 0,
@@ -32,6 +34,11 @@ const priorityOrder: Record<'default' | string & {}, number> = {
   default: Number.MAX_VALUE
 };
 
+const closedRootFolders = [
+  'Mock',
+  'Internal'
+];
+
 async function copyDirContents(srcDir: string, destDir: string, promises: Array<Promise<VoidOrVoidArray>> = []): Promise<Array<Promise<VoidOrVoidArray>>> {
   for await (const entry of await fsp.opendir(srcDir)) {
     const src = path.join(srcDir, entry.name);
@@ -47,11 +54,11 @@ async function copyDirContents(srcDir: string, destDir: string, promises: Array<
 }
 
 export const buildPublic = task(require.main === module, __filename)(async (span) => {
-  await span.traceChildAsync('copy rest of the files', async () => {
+  await span.traceChild('copy rest of the files', SpanCategory.FsWrite).traceAsyncFn(async () => {
     const p: Array<Promise<any>> = [];
 
-    fs.mkdirSync(OUTPUT_MODULES_RULES_DIR, { recursive: true });
-    p.push(copyDirContents(path.join(ROOT_DIR, 'Modules'), OUTPUT_MODULES_RULES_DIR, p));
+    fs.mkdirSync(OUTPUT_MODULES_DIR, { recursive: true });
+    p.push(copyDirContents(path.join(ROOT_DIR, 'Modules'), OUTPUT_MODULES_DIR, p));
 
     fs.mkdirSync(OUTPUT_MOCK_DIR, { recursive: true });
     p.push(copyDirContents(path.join(ROOT_DIR, 'Mock'), OUTPUT_MOCK_DIR, p));
@@ -60,20 +67,22 @@ export const buildPublic = task(require.main === module, __filename)(async (span
   });
 
   const html = await span
-    .traceChild('generate index.html')
+    // crawls the whole public dir; the html templating itself is trivial
+    .traceChild('generate index.html', SpanCategory.FsRead)
     .traceAsyncFn(() => treeDir(PUBLIC_DIR).then(generateHtml));
 
-  await Promise.all([
+  return Promise.all([
     compareAndWriteFile(
       span,
-      [
-        '/*',
-        '  cache-control: public, max-age=240, stale-while-revalidate=60, stale-if-error=15',
-        'https://:project.pages.dev/*',
-        '  X-Robots-Tag: noindex',
-        ...Object.keys(priorityOrder)
-          .map((name) => `/${name}/*\n  content-type: text/plain; charset=utf-8\n  X-Robots-Tag: noindex`)
-      ],
+      appendArrayInPlace(
+        [
+          '/*',
+          '  cache-control: public, max-age=300, stale-while-revalidate=30, stale-if-error=60',
+          'https://:project.pages.dev/*',
+          '  X-Robots-Tag: noindex'
+        ],
+        Object.keys(priorityOrder).map((name) => `/${name}/*\n  content-type: text/plain; charset=utf-8\n  X-Robots-Tag: noindex`)
+      ),
       path.join(PUBLIC_DIR, '_headers')
     ),
     compareAndWriteFile(
@@ -96,29 +105,32 @@ export const buildPublic = task(require.main === module, __filename)(async (span
         '![GitHub repo size](https://img.shields.io/github/repo-size/sukkalab/ruleset.skk.moe?style=flat-square)'
       ],
       path.join(PUBLIC_DIR, 'README.md')
-    )
+    ),
+    writeFile(path.join(PUBLIC_DIR, '.nojekyll'), ''),
+    writeFile(path.join(PUBLIC_DIR, 'index.html'), html)
   ]);
-
-  return writeFile(path.join(PUBLIC_DIR, 'index.html'), html);
 });
 
 const prioritySorter = (a: TreeType, b: TreeType) => ((priorityOrder[a.name] || priorityOrder.default) - (priorityOrder[b.name] || priorityOrder.default)) || fastStringCompare(a.name, b.name);
 
-function treeHtml(tree: TreeTypeArray, level = 0) {
+function treeHtml(tree: TreeTypeArray, level = 0, closedFolderList: string[] = []): string {
   let result = '';
   tree.sort(prioritySorter);
+
   for (let i = 0, len = tree.length; i < len; i++) {
     const entry = tree[i];
+    const open = closedFolderList.includes(entry.name) ? '' : (level === 0 ? 'open' : '');
+
     if (entry.type === TreeFileType.DIRECTORY) {
       result += html`
         <li class="folder">
-          <details ${level === 0 ? 'open' : ''}>
+          <details ${open}>
             <summary>${entry.name}</summary>
             <ul>${treeHtml(entry.children, level + 1)}</ul>
           </details>
         </li>
       `;
-    } else if (/* entry.type === 'file' && */ !entry.name.endsWith('.html') && !entry.name.startsWith('_')) {
+    } else if (/* entry.type === 'file' && */ !entry.name.endsWith('.html') && entry.name[0] !== '_') {
       result += html`
         <li class="file"><a class="file-link" href="${entry.path}">${entry.name}</a></li>
       `;
@@ -708,7 +720,7 @@ function generateHtml(tree: TreeTypeArray) {
           <p>Last Build: ${new Date().toISOString()}</p>
           <br>
           <ul class="tree">
-            ${treeHtml(tree)}
+            ${treeHtml(tree, 0, closedRootFolders)}
           </ul>
         </main>
       </body>

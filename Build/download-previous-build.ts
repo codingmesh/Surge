@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { task } from './trace';
+import { SpanCategory, task } from './trace';
 import { extract as tarExtract } from 'tar-fs';
 import type { Headers as TarEntryHeaders } from 'tar-fs';
 import zlib from 'node:zlib';
@@ -34,9 +34,10 @@ export const downloadPreviousBuild = task(require.main === module, __filename)(a
       return GITLAB_CODELOAD_URL;
     }
     return GITHUB_CODELOAD_URL;
-  });
+  }, SpanCategory.Network);
 
-  return span.traceChildAsync('download & extract previoud build', async () => {
+  // streaming download -> gunzip -> untar to disk, network dominates so that is the tag
+  return span.traceChildAsync('download & extract previous build', async () => {
     const respBody = undici.pipeline(
       tarGzUrl,
       {
@@ -46,9 +47,7 @@ export const downloadPreviousBuild = task(require.main === module, __filename)(a
           // https://github.com/unjs/giget/issues/97
           // https://gitlab.com/gitlab-org/gitlab/-/commit/50c11f278d18fe1f3fb12eb595067216bb58ade2
           'sec-fetch-mode': 'same-origin'
-        },
-        // Allow redirects by default
-        maxRedirections: 5
+        }
       },
       ({ statusCode, body }) => {
         if (statusCode !== 200) {
@@ -91,5 +90,5 @@ export const downloadPreviousBuild = task(require.main === module, __filename)(a
         }
       )
     );
-  });
+  }, SpanCategory.Network);
 });

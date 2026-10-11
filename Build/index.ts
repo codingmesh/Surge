@@ -1,36 +1,39 @@
 import process from 'node:process';
 import os from 'node:os';
 import fs from 'node:fs';
-import fsp from 'node:fs/promises';
 
 import { downloadPreviousBuild } from './download-previous-build';
 import { buildCommon } from './build-common';
 import { buildRejectIPList } from './build-reject-ip-list';
 import { buildAppleCdn } from './build-apple-cdn';
-import { buildCdnDownloadConf } from './build-cdn-download-conf';
+import { buildAICIDR } from './build-ai-cidr';
 import { buildRejectDomainSet } from './build-reject-domainset';
-import { buildTelegramCIDR } from './build-telegram-cidr';
 import { buildChnCidr } from './build-chn-cidr';
 import { buildSpeedtestDomainSet } from './build-speedtest-domainset';
 import { buildDomesticRuleset } from './build-domestic-direct-lan-ruleset-dns-mapping-module';
+import { buildGlobalRuleset } from './build-global-server-dns-mapping';
 import { buildStreamService } from './build-stream-service';
 
 import { buildRedirectModule } from './build-sgmodule-redirect';
 import { buildAlwaysRealIPModule } from './build-sgmodule-always-realip';
 
-import { buildMicrosoftCdn } from './build-microsoft-cdn';
-import { buildSSPanelUIMAppProfile } from './build-sspanel-appprofile';
-
-import { buildPublic } from './build-public';
+import { buildTelegram } from './build-telegram';
 import { downloadMockAssets } from './download-mock-assets';
 
+import { buildPublic } from './build-public';
 import { buildCloudMounterRules } from './build-cloudmounter-rules';
 
-import { createSpan, printTraceResult, whyIsNodeRunning } from './trace';
+import { printBuildReport, whyIsNodeRunning } from './trace';
+import type { TraceResult } from './trace';
+import { performance } from 'node:perf_hooks';
 import { buildDeprecateFiles } from './build-deprecate-files';
 import path from 'node:path';
-import { CACHE_DIR, ROOT_DIR } from './constants/dir';
+import { ROOT_DIR } from './constants/dir';
 import { isCI } from 'ci-info';
+import { printExternalDownloadStats } from './lib/download-stats';
+import { printWireStats } from './lib/download-wire-stats';
+import { endBuildWorkerFarm, getBuildWorkerFarm, warmBuildWorkerFarm } from './lib/build-worker-farm';
+import { appendArrayInPlace } from 'foxts/append-array-in-place';
 
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
@@ -40,12 +43,6 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
   process.exit(1);
 });
-
-const removesFiles = [
-  path.join(CACHE_DIR, '.cache.db'),
-  path.join(CACHE_DIR, '.cache.db-shm'),
-  path.join(CACHE_DIR, '.cache.db-wal')
-];
 
 const buildFinishedLock = path.join(ROOT_DIR, '.BUILD_FINISHED');
 
@@ -73,11 +70,23 @@ const buildFinishedLock = path.join(ROOT_DIR, '.BUILD_FINISHED');
 
   console.log(`Memory: ${os.totalmem() / (1024 * 1024)} MiB`);
 
-  const rootSpan = createSpan('root');
-
   if (fs.existsSync(buildFinishedLock)) {
     fs.unlinkSync(buildFinishedLock);
   }
+
+  // Build-wide resource baselines: how busy the main thread's event loop was
+  // (CPU vs. waiting on I/O) and how much CPU the whole process (incl. worker
+  // threads) burned relative to wall-clock.
+  const eluAtStart = performance.eventLoopUtilization();
+  const cpuAtStart = process.cpuUsage();
+
+  // The one thread farm every off-main-thread job goes through: the reject
+  // sources / phishing parse, the two trie-heavy CDN tasks, and any FileOutput
+  // that crosses the offload threshold. Booted here rather than on first use so
+  // the ~250ms-per-thread spin-up overlaps the first downloads instead of landing
+  // on the critical path. Everything else is I/O-bound and stays on this thread.
+  warmBuildWorkerFarm();
+  const farm = getBuildWorkerFarm();
 
   try {
     // only enable why-is-node-running in GitHub Actions debug mode
@@ -85,42 +94,45 @@ const buildFinishedLock = path.join(ROOT_DIR, '.BUILD_FINISHED');
       await import('why-is-node-running');
     }
 
-    const downloadPreviousBuildPromise = downloadPreviousBuild(rootSpan);
-    const buildCommonPromise = downloadPreviousBuildPromise.then(() => buildCommon(rootSpan));
+    const downloadPreviousBuildPromise = downloadPreviousBuild();
 
-    await Promise.all([
-      ...removesFiles.map(file => fsp.rm(file, { force: true })),
-      downloadPreviousBuildPromise,
-      buildCommonPromise,
-      downloadPreviousBuildPromise.then(() => buildRejectIPList(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildAppleCdn(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildCdnDownloadConf(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildRejectDomainSet(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildTelegramCIDR(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildChnCidr(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildSpeedtestDomainSet(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildDomesticRuleset(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildRedirectModule(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildAlwaysRealIPModule(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildStreamService(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildMicrosoftCdn(rootSpan)),
+    const [traces, telegramTraces]: [TraceResult[], TraceResult[]] = await Promise.all([
       Promise.all([
         downloadPreviousBuildPromise,
-        buildCommonPromise
-      ]).then(() => buildSSPanelUIMAppProfile(rootSpan)),
-      downloadPreviousBuildPromise.then(() => buildCloudMounterRules(rootSpan)),
-      downloadMockAssets(rootSpan)
+        downloadPreviousBuildPromise.then(() => buildCommon()),
+        downloadPreviousBuildPromise.then(() => buildRejectIPList()),
+        downloadPreviousBuildPromise.then(() => buildAppleCdn()),
+        downloadPreviousBuildPromise.then(() => buildAICIDR()),
+        downloadPreviousBuildPromise.then(() => farm.buildCdnDownloadConf()),
+        downloadPreviousBuildPromise.then(() => buildRejectDomainSet()),
+        downloadPreviousBuildPromise.then(() => buildChnCidr()),
+        downloadPreviousBuildPromise.then(() => buildSpeedtestDomainSet()),
+        downloadPreviousBuildPromise.then(() => buildDomesticRuleset()),
+        downloadPreviousBuildPromise.then(() => buildGlobalRuleset()),
+        downloadPreviousBuildPromise.then(() => buildRedirectModule()),
+        downloadPreviousBuildPromise.then(() => buildAlwaysRealIPModule()),
+        downloadPreviousBuildPromise.then(() => buildStreamService()),
+        downloadPreviousBuildPromise.then(() => farm.buildMicrosoftCdn()),
+        downloadPreviousBuildPromise.then(() => buildCloudMounterRules()),
+        downloadMockAssets()
+      ]),
+      downloadPreviousBuildPromise.then(() => buildTelegram())
     ]);
 
-    await buildDeprecateFiles(rootSpan);
-    await buildPublic(rootSpan);
-
-    rootSpan.stop();
-
-    printTraceResult(rootSpan.traceResult);
+    appendArrayInPlace(traces, telegramTraces);
+    traces.push(await buildDeprecateFiles(), await buildPublic());
 
     // write a file to demonstrate that the build is finished
     fs.writeFileSync(buildFinishedLock, 'BUILD_FINISHED\n');
+
+    printExternalDownloadStats();
+    printWireStats();
+    printBuildReport(traces, {
+      elu: performance.eventLoopUtilization(eluAtStart),
+      cpu: process.cpuUsage(cpuAtStart)
+    });
+
+    await endBuildWorkerFarm();
 
     // Finish the build to avoid leaking timer/fetch ref
     await whyIsNodeRunning();

@@ -4,9 +4,11 @@ import { parseFelixDnsmasqFromResp } from './lib/parse-dnsmasq';
 import { $$fetch } from './lib/fetch-retry';
 import runAgainstSourceFile from './lib/run-against-source-file';
 import { getTopOneMillionDomains } from './validate-gfwlist';
-import { HostnameSmolTrie } from './lib/trie';
+import { HostnameSmolTrie } from 'hntrie/smol';
+import { domainToASCII } from 'node:url';
 import tldts from 'tldts-experimental';
 import { DOMESTICS } from '../Source/non_ip/domestic';
+import { DOMESTIC_CDN } from '../Source/non_ip/domestic_cdn';
 
 export async function parseDomesticList() {
   const allChinaDomains = new Set<string>(await parseFelixDnsmasqFromResp(await $$fetch('https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf')));
@@ -15,17 +17,21 @@ export async function parseDomesticList() {
 
   const resultTrie = new HostnameSmolTrie();
 
-  topDomainTrie.dumpWithoutDot((domain) => {
+  topDomainTrie.dump((domain) => {
     const apexDomain = tldts.getDomain(domain);
 
     if (apexDomain && allChinaDomains.has(apexDomain)) {
-      resultTrie.add(apexDomain, false);
+      resultTrie.add(apexDomain);
     }
   });
 
-  const callback = (domain: string, includeAllSubdomain: boolean) => resultTrie.whitelist(domain, includeAllSubdomain);
+  const callback = (domain: string, includeAllSubdomain: boolean) => resultTrie.whitelist(includeAllSubdomain ? '.' + domain : domain);
 
   // await Promise.all([
+  await runAgainstSourceFile(
+    path.resolve(SOURCE_DIR, 'non_ip/domestic_cdn.conf'),
+    callback
+  );
   await runAgainstSourceFile(
     path.resolve(SOURCE_DIR, 'non_ip/domestic.conf'),
     callback
@@ -35,16 +41,16 @@ export async function parseDomesticList() {
     callback
   );
 
-  Object.values(DOMESTICS).forEach(domestic => {
+  [DOMESTICS, DOMESTIC_CDN].flatMap(item => Object.values(item)).forEach(domestic => {
     domestic.domains.forEach(domain => {
       switch (domain[0]) {
         case '+':
         case '$': {
-          resultTrie.whitelist(domain.slice(1), true);
+          resultTrie.whitelist('.' + domain.slice(1));
           break;
         }
         default: {
-          resultTrie.whitelist(domain, true);
+          resultTrie.whitelist('.' + domain);
           break;
         }
       }
@@ -58,8 +64,16 @@ export async function parseDomesticList() {
   //   }
   // }
   // ]);
+  const dump: string[] = [];
+  resultTrie.dump((rawDomain, includeSubdomain) => {
+    const domain = domainToASCII(rawDomain);
+    if (domain) dump.push(includeSubdomain ? '.' + domain : domain);
+  });
+  dump.sort((a, b) => (a.length - b.length) || (a < b ? -1 : (a > b ? 1 : 0)));
 
-  console.log(resultTrie.dump().join('\n') + '\n');
+  console.log(dump.join('\n') + '\n');
+
+  console.log(`# Total: ${dump.length}`);
 }
 
 if (require.main === module) {
